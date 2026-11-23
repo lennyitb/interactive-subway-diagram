@@ -1,0 +1,487 @@
+8 Van Cortlandt Park-242 St
+15 238 St
+20 231 St
+26 Marble Hill-225 St
+37 215 St
+40 207 St
+42 Inwood-207 St
+44 Dyckman St|A
+48 Dyckman St|1
+52 191 St
+53 190 St
+58 181 St|A
+59 181 St|1
+63 175 St
+67 168 St-Washington Hts
+71 163 St-Amsterdam Av
+74 157 St
+75 155 St|C
+0 Wakefield-241 St
+1 Nereid Av
+3 233 St
+5 225 St
+9 219 St
+12 Gun Hill Rd|2
+17 Burke Av
+24 Allerton Av
+29 Pelham Pkwy|2
+33 Bronx Park East
+38 E 180 St
+45 West Farms Sq-E Tremont Av
+49 174 St
+56 Freeman St
+64 Simpson St
+69 Intervale Av
+73 Prospect Av
+2 Eastchester-Dyre Av
+4 Baychester Av
+11 Gun Hill Rd|5
+21 Pelham Pkwy|5
+27 Morris Park
+6 Woodlawn
+10 Mosholu Pkwy
+16 Bedford Park Blvd-Lehman College
+25 Kingsbridge Rd|4
+31 Fordham Rd|4
+34 183 St
+41 Burnside Av
+47 176 St
+55 Mt Eden Av
+60 170 St|4
+65 167 St|4
+70 161 St-Yankee Stadium
+7 Norwood-205 St
+14 Bedford Park Blvd|D
+22 Kingsbridge Rd|D
+30 Fordham Rd|D
+36 182-183 Sts
+43 Tremont Av
+50 174-175 Sts
+61 170 St|D
+66 167 St|D
+13 Pelham Bay Park
+18 Buhre Av
+19 X
+23 Middletown Rd
+28 Westchester Sq-E Tremont Av
+32 Zerega Av
+35 Castle Hill Av
+39 Parkchester
+46 St Lawrence Av
+51 Morrison Av-Soundview
+54 X
+57 Elder Av
+62 Whitlock Av
+68 Hunts Point Av
+72 Longwood Av
+78 E 149 St
+82 E 143 St-St Mary's St
+85 3 Av-138 St
+88 Brook Av
+89 Cypress Av
+91 X
+79 149 St-Grand Concourse
+80 3 Av-149 St
+77 Jackson Av
+90 138 St-Grand Concourse
+98 125 St|456
+101 116 St|6
+107 110 St|6
+112 103 St|6
+116 96 St|6
+124 86 St|456
+144 77 St
+155 68 St-Hunter College
+117 96 St|Q
+125 86 St|Q
+151 72 St|Q
+114 Astoria-Ditmars Blvd
+120 Astoria Blvd
+128 30 Av
+136 Broadway|NW
+149 36 Av
+157 39 Av-Dutch Kills
+132 46 St|MR
+143 Steinway St
+156 36 St|MR
+163 Roosevelt Island
+164 21 St-Queensbridge
+76 155 St|BD
+83 145 St|1
+92 137 St-City College
+96 125 St|1
+102 116 St-Columbia University
+109 Cathedral Pkwy (110 St)|1
+113 103 St|1
+119 96 St|123
+126 86 St|1
+135 79 St
+152 72 St|123
+160 66 St-Lincoln Center
+84 145 St|ACBD
+93 135 St|BC
+99 125 St|ACBD
+104 116 St|BC
+108 Cathedral Pkwy (110 St)|BC
+111 103 St|BC
+118 96 St|BC
+123 86 St|BC
+134 81 St-Museum of Natural History
+150 72 St|BC
+81 Harlem-148 St
+86 145 St|3
+94 135 St|23
+97 125 St|23
+103 116 St|23
+106 Central Park North (110 St)
+162 X
+167 59 St-Columbus Circle
+173 57 St-7 Av
+169 5 Av/59 St
+172 57 St
+180 7 Av|BDE
+181 5 Av/53 St
+186 47-50 Sts-Rockefeller Center
+184 50 St|1
+185 50 St|CE
+187 49 St
+191 Times Sq-42 St/Port Authority Bus Terminal
+197 =191
+192 42 St-Bryant Pk/5 Av
+206 34 St-Hudson Yards
+211 34 St-Penn Station|ACE
+210 34 St-Penn Station|123
+201 34 St-Herald Sq
+213 PATH 33 St
+219 28 St|1
+224 23 St|1
+239 18 St
+226 23 St|CE
+246 14 St/8 Av
+241 14 St/6 Av
+228 PATH 23 St
+225 23 St|FM
+232 X
+251 PATH 14 St
+258 PATH 9 St
+269 Christopher St-Stonewall
+217 28 St|NRW
+222 23 St|NRW
+161 Lexington Av/59 St
+168 Queensboro Plaza
+174 Queens Plaza
+175 33 St-Rawson St
+179 Court Sq
+182 Lexington Av/53 St
+189 21 St|G
+193 Hunters Point Av
+196 Vernon Blvd-Jackson Av
+195 Grand Central-42 St
+202 X
+212 33 St|6
+218 28 St|6
+227 23 St|6
+240 14 St-Union Sq
+247 3 Av|L
+248 1 Av
+249 Bedford Av
+242 Lorimer St/Metropolitan Av
+223 Graham Av
+207 Greenpoint Av
+216 Nassau Av
+261 8 St-NYU
+262 Astor Pl
+87 Flushing-Main St
+95 Mets-Willets Point
+100 111 St|7
+105 103 St-Corona Plaza
+110 Junction Blvd
+115 90 St-Elmhurst Av
+122 82 St-Jackson Hts
+129 Jackson Hts-Roosevelt Av/74 St-Broadway
+154 69 St
+131 Northern Blvd
+133 65 St
+130 Elmhurst Av
+139 Grand Av-Newtown
+140 Woodhaven Blvd|MR
+141 63 Dr-Rego Park
+142 67 Av
+138 Forest Hills-71 Av
+145 75 Av
+147 Kew Gardens-Union Tpke
+146 Briarwood
+148 Sutphin Blvd|F
+137 Parsons Blvd
+127 169 St
+158 Jamaica-Van Wyck
+121 Jamaica-179 St
+153 Jamaica Center-Parsons/Archer
+159 Sutphin Blvd-Archer Av-JFK Airport
+166 AirTrain Jamaica
+171 121 St
+178 111 St|J
+183 104 St|J
+188 Woodhaven Blvd|J
+194 85 St-Forest Pkwy
+199 75 St-Elderts Ln
+203 Cypress Hills
+230 Crescent St
+252 Norwood Av
+260 Cleveland St
+267 Van Siclen Av|J
+271 Alabama Av
+198 Ozone Park-Lefferts Blvd
+200 111 St|A
+205 104 St|A
+208 Rockaway Blvd
+214 88 St
+220 80 St
+231 Grant Av
+254 Euclid Av
+270 Shepherd Av
+229 Aqueduct Racetrack
+243 Aqueduct-North Conduit Av
+257 Howard Beach-JFK Airport
+255 Lefferts Blvd (AirTrain)
+256 Federal Circle
+234 Terminal 7
+244 Terminal 8
+245 Terminal 5
+264 Terminal 1
+265 Terminal 4
+266 Terminal 2
+204 Middle Village-Metropolitan Av
+209 Fresh Pond Rd
+165 Woodside-61 St
+170 52 St
+177 40 St-Lowery St
+176 46 St-Bliss St
+190 X
+215 Forest Av
+221 Seneca Av
+238 Myrtle-Wyckoff Avs
+237 Halsey St|L
+235 Jefferson St
+236 DeKalb Av|L
+233 Grand St|L
+253 Montrose Av
+250 Morgan Av
+263 Knickerbocker Av
+259 Wilson Av
+268 Bushwick Av-Aberdeen St
+273 Central Av
+280 Broadway|G
+285 Hewes St
+284 Lorimer St|JM
+286 Flushing Av|JM
+287 Myrtle Av
+292 Kosciuszko St
+291 Gates Av
+294 Halsey St|J
+293 Chauncey St
+312 Flushing Av|G
+325 Myrtle-Willoughby Avs
+332 Bedford-Nostrand Avs
+345 Classon Av
+357 Clinton-Washington Avs|G
+366 Fulton St|G
+315 Ralph Av
+327 Utica Av
+338 Kingston-Throop Avs
+349 Nostrand Av|AC
+360 Franklin Av/Fulton St
+367 Clinton-Washington Avs|C
+369 Lafayette Av
+375 Park Pl
+359 X
+371 X
+374 X
+364 Kingston Av
+372 Nostrand Av|3
+377 President St-Medgar Evers College
+379 Sterling St
+383 Winthrop St
+373 Atlantic Av-Barclays Ctr
+378 Bergen St|23
+380 7 Av|BQ
+381 Grand Army Plaza
+382 Franklin Av-Medgar Evers College
+275 PATH Christopher St
+279 Houston St
+300 Canal St|1
+311 Franklin St
+324 Chambers St|123
+274 W 4 St-Washington Sq
+290 Spring St|CE
+303 Canal St|ACE
+319 Chambers St/WTC/Park Pl/Cortlandt St
+337 =319
+329 PATH World Trade Center
+339 WTC Cortlandt
+354 Rector St|1
+352 Rector St|RW
+272 Broadway-Lafayette St/Bleecker St
+281 Prince St
+276 2 Av
+282 Delancey St-Essex St
+288 Marcy Av
+289 Spring St|6
+295 Bowery
+297 Grand St|BD
+301 East Broadway
+305 Canal St
+307 =305
+318 Brooklyn Bridge-City Hall/Chambers St
+320 City Hall
+326 York St
+331 Fulton St
+334 =331
+341 High St
+344 X
+340 X
+316 X
+309 X
+387 X
+464 X
+350 Wall St|45
+353 Wall St|23
+356 Broad St
+361 Bowling Green
+363 South Ferry/Whitehall St
+355 Jay St-MetroTech
+358 DeKalb Av|BQR
+362 Clark St
+365 Court St/Borough Hall
+368 Hoyt St
+370 Nevins St
+376 Hoyt-Schermerhorn Sts
+384 Bergen St|FG
+278 Broadway Junction
+283 Liberty Av
+277 Van Siclen Av|C
+299 Rockaway Av|C
+298 Atlantic Av
+310 Sutter Av|L
+322 @greyL=Livonia Av;@red123=Junius St
+328 New Lots Av|L
+335 East 105 St
+346 Canarsie-Rockaway Pkwy
+304 New Lots Av|3
+314 Van Siclen Av|3
+321 Pennsylvania Av
+333 Rockaway Av|3
+343 Saratoga Av
+347 Sutter Av-Rutland Rd
+348 Crown Heights-Utica Av
+306 Broad Channel
+296 Far Rockaway-Mott Av
+302 Beach 25 St
+308 Beach 36 St
+313 Beach 44 St
+317 Beach 60 St
+323 Beach 67 St
+330 Beach 90 St
+336 Beach 98 St
+342 Beach 105 St
+351 Rockaway Park-Beach 116 St
+386 Union St
+390 Carroll St
+393 Smith-9 Sts
+394 4 Av-9 St
+398 Prospect Av|R
+402 25 St
+407 36 St
+415 45 St
+422 53 St
+429 59 St
+439 Bay Ridge Av
+448 77 St
+460 86 St|R
+387 X
+388 Eastern Pkwy-Brooklyn Museum
+392 7 Av|FG
+396 15 St-Prospect Park
+397 Prospect Park
+399 Parkside Av
+401 Church Av|BQ
+403 Beverley Rd|BQ
+405 Cortelyou Rd
+410 Newkirk Plaza
+414 Avenue H
+419 Avenue J
+423 Avenue M
+428 Kings Hwy|BQ
+437 Avenue U|Q
+400 Fort Hamilton Pkwy|FG
+406 Church Av|FG
+411 Ditmas Av
+417 18 Av|F
+420 Avenue I
+426 Bay Pkwy|F
+431 Avenue N
+441 Avenue P
+447 Kings Hwy|F
+452 Avenue U|F
+455 Avenue X
+459 Neptune Av
+409 9 Av
+412 Fort Hamilton Pkwy|D
+418 50 St|D
+424 55 St
+427 62 St/New Utrecht Av
+438 71 St
+445 79 St
+454 18 Av|D
+435 8 Av
+434 Fort Hamilton Pkwy|N
+432 18 Av|N
+433 20 Av|N
+443 Bay Pkwy|N
+450 Kings Hwy|N
+458 Avenue U|N
+462 20 Av|D
+463 Bay Pkwy|D
+464 25 Av
+468 X
+469 Bay 50 St
+472 Coney Island-Stillwell Av
+465 86 St|N
+466 W 8 St-NY Aquarium
+457 Ocean Pkwy
+451 Brighton Beach
+446 Sheepshead Bay
+442 Neck Rd
+470 Bay Ridge-95 St
+385 Church Av|25
+389 Beverly Rd|25
+391 Newkirk Av-Little Haiti
+395 Flatbush Av-Brooklyn College
+404 St George
+408 Tompkinsville
+413 Stapleton
+416 Clifton
+421 Grasmere
+425 Old Town
+430 Dongan Hills
+436 Jefferson Av
+440 Grant City
+444 New Dorp
+449 Oakwood Heights
+453 Bay Terrace
+456 Great Kills
+461 Eltingville
+467 Annadale
+471 Huguenot
+473 Prince's Bay
+474 Pleasant Plains
+475 Richmond Valley
+476 Arthur Kill
+477 Tottenville
+144 77 St|6
+448 77 St|R
+135 79 St|1
+445 79 St|D
+464 25 Av
+387 X
+161 #627,1023+627,1013=Lexington Av/63 St;#rest=Lexington Av/59 St

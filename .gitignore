@@ -1,0 +1,9 @@
+# MTA diagram: copyrighted, not redistributable
+Subway diagram.pdf
+*.pdf
+.vscode/
+.DS_Store
+__pycache__/
+tools/fit/flat.json
+tools/fit/bands.json
+tools/fit/dots.json
