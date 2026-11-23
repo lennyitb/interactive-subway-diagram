@@ -144,8 +144,8 @@ data=dict(
   routes=routes, stations=st_out, transfers=transfers, connectors=conn, bands=band_out,
   ferries=[dict(id='staten-island-ferry',name='Staten Island Ferry',color='#5696C1',stations=['south-ferry-whitehall-st','st-george'],line=[[round(x,2),round(y,2)] for x,y in ferry['subs'][0]])])
 import os
-os.makedirs('../../data',exist_ok=True)
-json.dump(data,open('../../data/nyc-subway-diagram.json','w'),indent=1)
+os.makedirs('../../data/reference',exist_ok=True)
+json.dump(data,open('../../data/reference/nyc-subway-4d.json','w'),indent=1)
 print('routes',len(routes),'stations',len(st_out),'bands',len(band_out),'connectors',len(conn),'transfers',transfers)
 print('Z:',Z)
 print('unserved:',[s['id'] for s in st_out if not s['routes']])

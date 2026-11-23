@@ -2,189 +2,533 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Subway diagram data preview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NYC subway diagram</title>
 <style>
-  html, body { margin: 0; height: 100%; font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
-  canvas { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+               font-family: -apple-system, "SF Pro Display", Inter, system-ui, sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; cursor: grab; }
   canvas.dragging { cursor: grabbing; }
-  #panel { position: fixed; top: 12px; left: 12px; background: rgba(255,255,255,.95); border-radius: 8px;
-           box-shadow: 0 1px 6px rgba(0,0,0,.2); padding: 10px 12px; max-width: 280px; font-size: 13px; }
-  #routes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-  .bullet { width: 24px; height: 24px; border-radius: 50%; border: 0; font-weight: 700; font-size: 13px; cursor: pointer; }
-  .bullet.diamond { border-radius: 3px; transform: rotate(45deg) scale(.8); }
-  .bullet.diamond span { display: inline-block; transform: rotate(-45deg); }
-  .bullet.off { opacity: .25; }
-  #info { margin-top: 8px; min-height: 1em; }
-  label { user-select: none; }
+  .chip { position: fixed; background: rgba(28,28,30,.88); border: 1px solid rgba(255,255,255,.14); color: #C7C7CC; }
+  #compass { right: 14px; top: 14px; width: 38px; height: 38px; border-radius: 19px; padding: 0; display: none;
+             align-items: center; justify-content: center; cursor: pointer; }
+  #panel { left: 12px; bottom: 12px; border-radius: 12px; padding: 7px 11px; font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
+  #panel label { user-select: none; cursor: pointer; }
+  #info { left: 12px; top: 12px; border-radius: 12px; padding: 9px 12px; font-size: 13px; color: #fff; display: none; max-width: 300px; }
+  #info small { color: #8E8E93; }
+  .bul { display: inline-flex; width: 20px; height: 20px; border-radius: 10px; align-items: center; justify-content: center;
+         font-size: 12px; font-weight: 700; margin: 4px 3px 0 0; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="panel">
-  <b>Diagram data preview</b><br>
-  <label><input type="checkbox" id="showBase" checked> basemap</label>
-  <label><input type="checkbox" id="showBands" checked> drawn bands</label>
-  <label><input type="checkbox" id="showRoutes"> route paths</label>
-  <div id="routes"></div>
-  <div id="info">Scroll to zoom, drag to pan. Click a bullet to highlight a route; click a station for details.</div>
+<button id="compass" class="chip" aria-label="Reset map to north up">
+  <svg width="18" height="18" viewBox="0 0 22 22" aria-hidden="true"><path d="M11 2 L15 11 L7 11 Z" fill="#FF453A"/><path d="M11 20 L15 11 L7 11 Z" fill="#8E8E93"/></svg>
+</button>
+<div id="info" class="chip"></div>
+<div id="panel" class="chip">
+  <label><input type="checkbox" id="optBase"> land</label>
+  <label><input type="checkbox" id="optRef"> source lanes</label>
+  <label><input type="checkbox" id="optGraph"> graph</label>
 </div>
 <script>
-const cv = document.getElementById('c'), ctx = cv.getContext('2d');
-let D, BASE, W = 0, H = 0, dpr = 1;
-const view = { k: 0.3, x: 0, y: 0 };            // screen = world * k + (x, y)
-let highlight = null, selected = null;
-const routeOn = {};
+// Colours: dark-mode service palette from the Almanac Midtown study.
+const COL = { '1': '#FF453A', '2': '#FF453A', '3': '#FF453A', '4': '#30D158', '5': '#30D158', '6': '#30D158', '7': '#BF5AF2',
+  A: '#0A84FF', C: '#0A84FF', E: '#0A84FF', B: '#FF9F0A', D: '#FF9F0A', F: '#FF9F0A', M: '#FF9F0A',
+  N: '#FFD60A', Q: '#FFD60A', R: '#FFD60A', W: '#FFD60A', L: '#A1A1A6', G: '#B3D966', J: '#AC8E68', Z: '#AC8E68',
+  GS: '#8E8E93', FS: '#8E8E93', H: '#8E8E93', SIR: '#64D2FF' };
+const GAPK = 0.75;            // extra gap between track groups, in lane pitches
+const ZREF = 2.8;             // diagram scale at which the study's zoom is 1
+const FONT = '-apple-system, "SF Pro Display", Inter, system-ui, sans-serif';
 
-Promise.all([fetch('data/nyc-subway-diagram.json').then(r => r.json()),
-             fetch('data/basemap.json').then(r => r.json())]).then(([d, b]) => {
-  D = d; BASE = b;
-  D.stationById = Object.fromEntries(D.stations.map(s => [s.id, s]));
-  for (const k of ['water', 'land', 'parks', 'boundaries']) BASE[k] = BASE[k].map(p => new Path2D(p));
-  const box = document.getElementById('routes');
-  for (const r of D.routes) {
-    routeOn[r.id] = true;
-    const b = document.createElement('button');
-    b.className = 'bullet' + (r.bullet === 'diamond' ? ' diamond' : '');
-    b.style.background = r.color; b.style.color = r.textColor;
-    b.innerHTML = `<span>${r.label}</span>`; b.title = `${r.id}: ${r.name}`;
-    b.onclick = () => { highlight = highlight === r.id ? null : r.id;
-      document.querySelectorAll('.bullet').forEach(x => x.classList.toggle('off', !!highlight && x !== b)); draw(); };
-    box.appendChild(b);
-  }
-  resize(); fit(); draw();
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let D, BASE, REF = null, W = 0, H = 0, dpr = 1, selected = null;
+const cam = { cx: 420, cy: 1250, k: 1.6, rot: 0 };
+const opt = { base: false, ref: false, graph: false };
+let N, E, RT, ST, inc, stopKinds, prim, complexes, terminals;
+
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const wrapA = a => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+function scr(x, y) { const dx = (x - cam.cx) * cam.k, dy = (y - cam.cy) * cam.k, c = Math.cos(cam.rot), s = Math.sin(cam.rot);
+  return [W / 2 + dx * c - dy * s, H / 2 + dx * s + dy * c]; }
+function inv(sx, sy) { const dx = sx - W / 2, dy = sy - H / 2, c = Math.cos(cam.rot), s = Math.sin(cam.rot);
+  return [cam.cx + (dx * c + dy * s) / cam.k, cam.cy + (-dx * s + dy * c) / cam.k]; }
+function worldTransform() { const c = Math.cos(cam.rot) * cam.k, s = Math.sin(cam.rot) * cam.k;
+  ctx.setTransform(dpr * c, dpr * s, -dpr * s, dpr * c, dpr * (W / 2 - c * cam.cx + s * cam.cy), dpr * (H / 2 - s * cam.cx - c * cam.cy)); }
+const laneColor = l => COL[l] || (RT[l] && RT[l].color) || '#FFFFFF';
+
+// ------------------------------------------------------------------ load
+const hash = location.hash.slice(1).split(',').map(Number);
+if (hash.length >= 3 && hash.every(v => !isNaN(v))) { cam.cx = hash[0]; cam.cy = hash[1]; cam.k = hash[2]; cam.rot = hash[3] || 0; }
+Promise.all([fetch('data/nyc-subway-diagram.json').then(r => r.json()), fetch('data/basemap.json').then(r => r.json())]).then(([d, b]) => {
+  D = d; BASE = b; prepare(); resize(); draw();
 });
+
+function prepare() {
+  N = Object.fromEntries(D.nodes.map(n => [n.id, n]));
+  E = Object.fromEntries(D.edges.map(e => [e.id, e]));
+  RT = Object.fromEntries(D.routes.map(r => [r.id, r]));
+  ST = Object.fromEntries(D.stations.map(s => [s.id, s]));
+  for (const k of ['water', 'land', 'parks', 'boundaries']) BASE[k] = BASE[k].map(p => new Path2D(p));
+  // lane slots across each edge, in lane pitches, centred on the edge's centreline
+  for (const e of D.edges) {
+    e.slot = {}; let u = 0, first = true;
+    e.tracks.forEach(g => g.forEach((l, li) => { if (!first) u += 1 + (li === 0 ? GAPK : 0); first = false; e.slot[l] = u; }));
+    for (const l in e.slot) e.slot[l] -= u / 2;
+    e.span = u;
+  }
+  inc = {};
+  for (const e of D.edges) for (const n of [e.from, e.to]) (inc[n] = inc[n] || []).push(e);
+  // which lanes stop at each platform, solid (always) or hollow (part-time)
+  stopKinds = {};
+  for (const r of D.routes) for (const p of r.patterns) p.stopNodes.forEach((n, i) => {
+    const m = stopKinds[n] = stopKinds[n] || {}, kind = p.stopStyles[i] === 'regular' ? 'y' : 'p';
+    if (m[r.lane] !== 'y') m[r.lane] = kind;
+  });
+  // the edge whose lane layout a platform's pill follows: the one carrying most of its stopping lanes
+  prim = {};
+  for (const n of D.nodes) {
+    if (n.kind !== 'platform') continue;
+    const sk = stopKinds[n.id] || {};
+    let best = null, bs = -1;
+    for (const e of inc[n.id] || []) {
+      const sc = Object.keys(sk).filter(l => l in e.slot).length * 100 + e.lanes.length;
+      if (sc > bs) { bs = sc; best = e; }
+    }
+    prim[n.id] = best;
+  }
+  complexes = D.stations.filter(s => s.platforms.length);
+  terminals = new Set();
+  for (const r of D.routes) for (const p of r.patterns) { terminals.add(p.stops[0]); terminals.add(p.stops[p.stops.length - 1]); }
+}
 
 function resize() {
   dpr = window.devicePixelRatio || 1; W = innerWidth; H = innerHeight;
-  cv.width = W * dpr; cv.height = H * dpr;
-}
-function fit() {
-  const [, , vw, vh] = D.meta.coordinateSpace.viewBox;
-  view.k = Math.min(W / vw, H / vh); view.x = (W - vw * view.k) / 2; view.y = (H - vh * view.k) / 2;
-}
-const toScreen = (x, y) => [x * view.k + view.x, y * view.k + view.y];
-
-function strokeLines(lines, color, px, dash) {
-  ctx.beginPath();
-  for (const l of lines) { ctx.moveTo(l[0][0], l[0][1]); for (let i = 1; i < l.length; i++) ctx.lineTo(l[i][0], l[i][1]); }
-  ctx.strokeStyle = color; ctx.lineWidth = px / view.k; ctx.setLineDash(dash ? [6 / view.k, 1.5 / view.k] : []); ctx.stroke();
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
 }
 
+// ------------------------------------------------------------------ geometry helpers
+// Unit tangent of an edge at one of its ends, oriented from -> to, in screen space.
+function edgeTangent(e, atNode) {
+  const P = e.scr, n = P.length;
+  let a, b;
+  if (atNode === e.from) { a = P[0]; b = P[1]; } else { a = P[n - 2]; b = P[n - 1]; }
+  const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+  return [dx / l, dy / l];
+}
+// Build a lane polyline for a route pattern: centreline vertices with a per-vertex offset (px, + = right of travel).
+// Where the lane changes slot at a node it eases across along the path, on the side of the narrower edge,
+// so a trunk keeps its lanes straight up to a junction and the branch peels off.
+const smooth = t => t * t * (3 - 2 * t);
+function laneVerts(p, lane, pitch, R0) {
+  const V = [], joints = [];
+  let prevSpan = null;
+  for (const [eid, dir] of p.edges) {
+    const e = E[eid], o = (e.slot[lane] ?? 0) * pitch * dir;
+    const pts = dir > 0 ? e.scr : [...e.scr].reverse();
+    if (V.length) {
+      const last = V[V.length - 1];
+      if (Math.abs(last.o - o) > 0.01) joints.push({ i: V.length - 1, oIn: last.o, oOut: o, side: Math.sign(prevSpan - e.span) });
+    }
+    const hs = e.span * pitch / 2;
+    if (V.length) V[V.length - 1].hs = Math.max(V[V.length - 1].hs, hs);
+    for (let i = V.length ? 1 : 0; i < pts.length; i++) V.push({ x: pts[i][0], y: pts[i][1], o, hs });
+    prevSpan = e.span;
+  }
+  if (!joints.length) return roundCentre(V, R0);
+  const S = [0];
+  for (let i = 1; i < V.length; i++) S.push(S[i - 1] + Math.hypot(V[i].x - V[i - 1].x, V[i].y - V[i - 1].y));
+  const total = S[S.length - 1];
+  // transition windows along the path
+  for (const j of joints) {
+    const L = clamp(Math.abs(j.oOut - j.oIn) * 4.5, 10, 70), s = S[j.i];
+    if (j.side > 0) { j.w0 = s; j.w1 = s + L; } else if (j.side < 0) { j.w0 = s - L; j.w1 = s; } else { j.w0 = s - L / 2; j.w1 = s + L / 2; }
+  }
+  for (let k = 0; k < joints.length; k++) {
+    const j = joints[k], lo = k ? joints[k - 1].w1 : 0, hi = k < joints.length - 1 ? (S[j.i] + S[joints[k + 1].i]) / 2 : total;
+    j.w0 = Math.max(j.w0, lo, k ? (S[joints[k - 1].i] + S[j.i]) / 2 : 0); j.w1 = Math.min(j.w1, hi);
+    if (j.w1 - j.w0 < 2) { const m = S[j.i]; j.w0 = m - 1; j.w1 = m + 1; }
+  }
+  const offAt = s => {
+    let o = joints[0].oIn;
+    for (const j of joints) {
+      if (s < j.w0) return o;
+      if (s <= j.w1) return j.oIn + (j.oOut - j.oIn) * smooth((s - j.w0) / Math.max(1e-6, j.w1 - j.w0));
+      o = j.oOut;
+    }
+    return o;
+  };
+  // resample inside the windows so the ease is smooth, keep every original vertex elsewhere
+  const out = [];
+  let i = 1;
+  const at = s => {   // point on the centreline at arc length s (called with increasing s)
+    while (i < S.length - 1 && S[i] < s) i++;
+    const t = (s - S[i - 1]) / Math.max(1e-9, S[i] - S[i - 1]);
+    return { x: V[i - 1].x + (V[i].x - V[i - 1].x) * t, y: V[i - 1].y + (V[i].y - V[i - 1].y) * t };
+  };
+  const stops = new Set();
+  for (let i = 0; i < V.length; i++) stops.add(S[i]);
+  for (const j of joints) for (let s = Math.max(0, j.w0); s <= Math.min(total, j.w1) + 1e-6; s += 3) stops.add(Math.min(s, total));
+  [...stops].sort((a, b) => a - b).forEach(s => {
+    if (out.length && s - out[out.length - 1].s < 0.3) return;
+    const q = at(s); out.push({ x: q.x, y: q.y, o: offAt(s), s, hs: (S[i] - s < 0.01 ? V[i].hs : s - S[i - 1] < 0.01 ? V[i - 1].hs : Math.max(V[i - 1].hs, V[i].hs)) });
+  });
+  return roundCentre(out, R0);
+}
+// Round the centreline's corners before the lanes are offset from it. The radius is the corner radius plus
+// half the trunk's width, so every lane gets a concentric arc and inside lanes never fold back on themselves.
+function roundCentre(V, R0) {
+  if (V.length < 3) return V;
+  const out = [V[0]];
+  for (let i = 1; i < V.length - 1; i++) {
+    const a = V[i - 1], b = V[i], c = V[i + 1];
+    const l1 = Math.hypot(b.x - a.x, b.y - a.y), l2 = Math.hypot(c.x - b.x, c.y - b.y);
+    if (l1 < 1e-6 || l2 < 1e-6) continue;
+    const d1 = [(b.x - a.x) / l1, (b.y - a.y) / l1], d2 = [(c.x - b.x) / l2, (c.y - b.y) / l2];
+    const th = Math.acos(clamp(d1[0] * d2[0] + d1[1] * d2[1], -1, 1));
+    if (th < 0.03) { out.push(b); continue; }
+    const tn = Math.tan(th / 2), t = Math.min((R0 + (b.hs || 0)) * tn, 0.5 * l1, 0.5 * l2);
+    const n = Math.max(2, Math.ceil(th / 0.14)), sgn = Math.sign(d1[0] * d2[1] - d1[1] * d2[0]);
+    const p0 = [b.x - d1[0] * t, b.y - d1[1] * t], R = t / tn;
+    const cx = p0[0] - d1[1] * R * sgn, cy = p0[1] + d1[0] * R * sgn;   // arc centre on the inside
+    const a0 = Math.atan2(p0[1] - cy, p0[0] - cx);
+    for (let k = 0; k <= n; k++) {
+      const ang = a0 + sgn * th * k / n;
+      out.push({ x: cx + Math.cos(ang) * R, y: cy + Math.sin(ang) * R, o: b.o, hs: b.hs });
+    }
+  }
+  out.push(V[V.length - 1]);
+  return out;
+}
+// Offset a polyline by per-vertex amounts (mitred), returning points and offset vectors.
+function offsetPoly(P) {
+  const n = P.length, out = [], V = [];
+  for (let i = 0; i < n; i++) {
+    let nx = 0, ny = 0, n1 = null;
+    if (i > 0) { const dx = P[i].x - P[i - 1].x, dy = P[i].y - P[i - 1].y, l = Math.hypot(dx, dy) || 1; n1 = [-dy / l, dx / l]; nx += n1[0]; ny += n1[1]; }
+    if (i < n - 1) { const dx = P[i + 1].x - P[i].x, dy = P[i + 1].y - P[i].y, l = Math.hypot(dx, dy) || 1, n2 = [-dy / l, dx / l]; nx += n2[0]; ny += n2[1]; if (!n1) n1 = n2; }
+    const L = Math.hypot(nx, ny) || 1; nx /= L; ny /= L;
+    const k = P[i].o / Math.max(0.5, nx * n1[0] + ny * n1[1]);
+    V.push([nx * k, ny * k]); out.push([P[i].x + nx * k, P[i].y + ny * k]);
+  }
+  return [out, V];
+}
+// Trace a polyline with radial corners; parallel lanes get concentric arcs (radius shrinks on the inside).
+function tracePath(P, V, R0) {
+  const n = P.length;
+  ctx.moveTo(P[0][0], P[0][1]);
+  for (let i = 1; i < n - 1; i++) {
+    const a = P[i - 1], b = P[i], c = P[i + 1];
+    const l1 = Math.hypot(b[0] - a[0], b[1] - a[1]), l2 = Math.hypot(c[0] - b[0], c[1] - b[1]);
+    if (l1 < 1e-6 || l2 < 1e-6) continue;
+    const d1 = [(b[0] - a[0]) / l1, (b[1] - a[1]) / l1], d2 = [(c[0] - b[0]) / l2, (c[1] - b[1]) / l2];
+    const th = Math.acos(clamp(d1[0] * d2[0] + d1[1] * d2[1], -1, 1));
+    if (th < 0.02) { ctx.lineTo(b[0], b[1]); continue; }
+    const ix = d2[0] - d1[0], iy = d2[1] - d1[1], il = Math.hypot(ix, iy) || 1;
+    let R = Math.max(2, R0 - (V[i][0] * ix + V[i][1] * iy) / il);
+    const tn = Math.tan(th / 2), t = Math.min(R * tn, 0.5 * Math.min(l1, l2));
+    R = t / tn;
+    ctx.arcTo(b[0], b[1], b[0] + d2[0] * t, b[1] + d2[1] * t, R);
+  }
+  ctx.lineTo(P[n - 1][0], P[n - 1][1]);
+}
+// Distance from segment (ax,ay)-(bx,by) to an axis-aligned rect; 0 if they touch.
+function segRectDist(ax, ay, bx, by, r) {
+  const inR = (x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  if (inR(ax, ay) || inR(bx, by)) return 0;
+  const ps = (px, py) => { const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
+    const t = clamp(((px - ax) * dx + (py - ay) * dy) / L2, 0, 1); return Math.hypot(ax + dx * t - px, ay + dy * t - py); };
+  const cross = (x1, y1, x2, y2) => { const d = (bx - ax) * (y2 - y1) - (by - ay) * (x2 - x1); if (Math.abs(d) < 1e-9) return false;
+    const u = ((x1 - ax) * (y2 - y1) - (y1 - ay) * (x2 - x1)) / d, v = ((x1 - ax) * (by - ay) - (y1 - ay) * (bx - ax)) / d;
+    return u >= 0 && u <= 1 && v >= 0 && v <= 1; };
+  const x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
+  if (cross(x0, y0, x1, y0) || cross(x1, y0, x1, y1) || cross(x1, y1, x0, y1) || cross(x0, y1, x0, y0)) return 0;
+  const dE = (px, py) => Math.hypot(Math.max(x0 - px, 0, px - x1), Math.max(y0 - py, 0, py - y1));
+  return Math.min(dE(ax, ay), dE(bx, by), ps(x0, y0), ps(x1, y0), ps(x1, y1), ps(x0, y1));
+}
+function wrapName(s) {
+  const lines = [s];
+  for (let k = 0; k < 3; k++) {
+    const i = lines.length - 1, t = lines[i];
+    if (t.length <= 17) break;
+    let best = -1, bd = 1e9;
+    for (let j = 1; j < t.length - 1; j++) if ('-/'.includes(t[j]) && Math.abs(j - t.length / 2) < bd) { bd = Math.abs(j - t.length / 2); best = j; }
+    if (best < 0) break;
+    lines.splice(i, 1, t.slice(0, best + 1), t.slice(best + 1));
+  }
+  return lines;
+}
+
+// ------------------------------------------------------------------ draw
 function draw() {
   if (!D) return;
+  const zs = cam.k / ZREF;
+  const lw = clamp(5.2 * Math.sqrt(zs), 1.1, 8.5), pitch = lw + 1.4 * Math.min(1, lw / 3);
+  const R0 = 44 * Math.pow(zs, 0.6);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = '#E4EDF9'; ctx.fillRect(0, 0, W, H);
-  ctx.setTransform(view.k * dpr, 0, 0, view.k * dpr, view.x * dpr, view.y * dpr);
-  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-  // feature sizes stay roughly constant on screen: widths are in px, divided by zoom
-  const zoomBoost = Math.min(1.6, Math.max(0.6, Math.sqrt(view.k / 0.35)));
-  const bandPx = 4.2 * zoomBoost;
-  if (document.getElementById('showBase').checked) {
-    ctx.fillStyle = BASE.meta.colors.land; BASE.land.forEach(p => ctx.fill(p));
-    ctx.fillStyle = BASE.meta.colors.parks; BASE.parks.forEach(p => ctx.fill(p));
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+
+  if (opt.base) {
+    worldTransform();
+    ctx.fillStyle = '#141416'; BASE.land.forEach(p => ctx.fill(p));
+    ctx.fillStyle = '#18211A'; BASE.parks.forEach(p => ctx.fill(p));
   }
-  const dim = id => highlight && highlight !== id;
-  if (document.getElementById('showBands').checked) {
-    for (const b of D.bands) {
-      const faded = highlight && !b.routes.includes(highlight);
-      ctx.globalAlpha = faded ? 0.15 : 1;
-      strokeLines(b.lines, b.color, b.system === 'path' || b.system === 'airtrain' ? bandPx * 0.45 : bandPx, b.dashed);
-    }
+  if (opt.ref && REF) {
+    worldTransform(); ctx.globalAlpha = 0.35; ctx.lineCap = 'butt'; ctx.lineJoin = 'round';
+    for (const b of REF.bands) { ctx.beginPath(); for (const l of b.lines) { ctx.moveTo(l[0][0], l[0][1]); for (const q of l.slice(1)) ctx.lineTo(q[0], q[1]); }
+      ctx.strokeStyle = b.color; ctx.lineWidth = b.width; ctx.stroke(); }
+    ctx.globalAlpha = 1;
   }
-  if (document.getElementById('showRoutes').checked || highlight) {
-    for (const r of D.routes) {
-      if (highlight && r.id !== highlight) continue;
-      ctx.globalAlpha = 1;
-      for (const p of r.patterns) { strokeLines([p.path], '#000', bandPx + 2, false); strokeLines([p.path], r.color, bandPx, false); }
-    }
-  }
-  ctx.globalAlpha = 1; ctx.setLineDash([]);
-  for (const c of D.connectors) strokeLines([c.line], c.type === 'part-time' ? '#999' : '#4D4D4D', bandPx * 0.55, c.type !== 'in-station');
-  // markers
-  const r0 = Math.max(1.6, 1.45 * zoomBoost);
-  for (const s of D.stations) {
-    const faded = highlight && !s.routes.includes(highlight);
-    ctx.globalAlpha = faded ? 0.2 : 1;
-    for (const m of s.markers) {
-      ctx.beginPath(); ctx.arc(m.x, m.y, (m.style.startsWith('interchange') ? r0 * 1.2 : r0) / view.k, 0, 7);
-      ctx.fillStyle = m.style === 'except-rush-peak' ? '#999' : '#fff'; ctx.fill();
-      if (m.style.startsWith('interchange') || s === selected) {
-        ctx.lineWidth = (s === selected ? 2 : 1) / view.k; ctx.strokeStyle = s === selected ? '#e00' : '#4D4D4D'; ctx.stroke();
-      }
-    }
-  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  for (const e of D.edges) e.scr = e.path.map(p => scr(p[0], p[1]));
+
+  // other systems and the ferry: thin, quiet
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const o of D.others) { ctx.beginPath(); for (const l of o.lines) l.forEach((q, i) => { const s = scr(q[0], q[1]); i ? ctx.lineTo(...s) : ctx.moveTo(...s); });
+    ctx.strokeStyle = o.color; ctx.globalAlpha = 0.7; ctx.lineWidth = Math.max(1, lw * 0.45); ctx.stroke(); }
   ctx.globalAlpha = 1;
-  drawLabels();
-}
+  for (const f of D.ferries) { ctx.beginPath(); f.line.forEach((q, i) => { const s = scr(q[0], q[1]); i ? ctx.lineTo(...s) : ctx.moveTo(...s); });
+    ctx.setLineDash([lw * 1.2, lw]); ctx.strokeStyle = '#5E9CC9'; ctx.lineWidth = Math.max(1, lw * 0.5); ctx.stroke(); ctx.setLineDash([]); }
 
-// Greedy label placement with collision avoidance, in screen space.
-function drawLabels() {
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const size = Math.round(Math.min(14, Math.max(10, 9 + view.k * 4)));
-  ctx.font = `600 ${size}px -apple-system, "Helvetica Neue", Arial, sans-serif`;
-  ctx.textBaseline = 'middle';
-  const placed = [];
-  const hit = r => placed.some(q => r.x < q.x + q.w && r.x + r.w > q.x && r.y < q.y + q.h && r.y + r.h > q.y);
-  // reserve marker footprints so labels don't cover stations
-  for (const s of D.stations) for (const m of s.markers) { const [x, y] = toScreen(m.x, m.y); placed.push({ x: x - 3, y: y - 3, w: 6, h: 6 }); }
-  const prio = s => (s === selected ? 1e6 : 0) + (highlight && s.routes.includes(highlight) ? 1e5 : 0)
-                  + s.routes.length * 10 + s.markers.length + (s.system === 'subway' ? 5 : 0);
-  const order = [...D.stations].sort((a, b) => prio(b) - prio(a));
-  for (const s of order) {
-    if (highlight && !s.routes.includes(highlight) && s !== selected) continue;
-    const xs = s.markers.map(m => toScreen(m.x, m.y));
-    const minX = Math.min(...xs.map(p => p[0])), maxX = Math.max(...xs.map(p => p[0]));
-    const minY = Math.min(...xs.map(p => p[1])), maxY = Math.max(...xs.map(p => p[1]));
-    if (maxX < -50 || minX > W + 50 || maxY < -20 || minY > H + 20) continue;
-    const w = ctx.measureText(s.name).width + 4, h = size + 2, cy = (minY + maxY) / 2, cx = (minX + maxX) / 2, g = 6;
-    const cands = [
-      { x: maxX + g, y: cy - h / 2 }, { x: minX - g - w, y: cy - h / 2 },
-      { x: cx - w / 2, y: minY - g - h }, { x: cx - w / 2, y: maxY + g },
-      { x: maxX + g, y: minY - g - h }, { x: maxX + g, y: maxY + g },
-      { x: minX - g - w, y: minY - g - h }, { x: minX - g - w, y: maxY + g }];
-    const spot = cands.find(r => !hit({ ...r, w, h }));
-    if (!spot) continue;
-    placed.push({ ...spot, w, h });
-    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.fillStyle = s.system === 'subway' || s.system === 'sir' ? '#111' : '#7a5c8a';
-    ctx.strokeText(s.name, spot.x + 2, spot.y + h / 2); ctx.fillText(s.name, spot.x + 2, spot.y + h / 2);
+  // service lanes
+  ctx.lineCap = 'butt';
+  const drawn = new Set();
+  for (const r of D.routes) for (const p of r.patterns) {
+    const sig = r.lane + '|' + p.edges.map(x => x.join()).join(';');
+    if (drawn.has(sig)) continue; drawn.add(sig);
+    const verts = laneVerts(p, r.lane, pitch, R0);
+    if (verts.length < 2) continue;
+    const [P, V] = offsetPoly(verts);
+    ctx.beginPath(); P.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]));
+    ctx.strokeStyle = laneColor(r.lane); ctx.lineWidth = lw; ctx.stroke();
   }
+
+  if (opt.graph) {
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.5)';
+    for (const e of D.edges) { ctx.beginPath(); e.scr.forEach((q, i) => i ? ctx.lineTo(...q) : ctx.moveTo(...q)); ctx.stroke(); }
+    for (const n of D.nodes) { const [x, y] = scr(n.x, n.y); ctx.beginPath(); ctx.arc(x, y, n.kind === 'platform' ? 2 : 3.5, 0, 7);
+      ctx.fillStyle = n.kind === 'junction' ? '#FF453A' : n.kind === 'end' ? '#30D158' : '#FFFFFF'; ctx.fill(); }
+  }
+
+  // platform pills
+  const zf = clamp(zs / 0.45, 0.3, 1), ph = lw + 7 * zf, sw = clamp(lw * 0.34, 0.9, 2.6), ch = lw * 0.6;
+  const minor = zs < 0.25;   // zoomed out: single-service stops shrink to dots
+  const pills = {};
+  for (const n of D.nodes) {
+    if (n.kind !== 'platform') continue;
+    const e = prim[n.id], sk = stopKinds[n.id] || {}, [x, y] = scr(n.x, n.y);
+    if (!e) continue;
+    const t = edgeTangent(e, n.id), nv = [-t[1], t[0]];
+    const stopping = e.lanes.filter(l => sk[l]);
+    let s0 = 0, s1 = 0;
+    if (stopping.length) { s0 = Math.min(...stopping.map(l => e.slot[l])); s1 = Math.max(...stopping.map(l => e.slot[l])); }
+    const m = (s0 + s1) / 2 * pitch, len = (s1 - s0) * pitch;
+    pills[n.id] = { x: x + nv[0] * m, y: y + nv[1] * m, nv, t, len, e, s0, s1, m, sk };
+  }
+  // in-station links between platforms of one complex, then out-of-station transfers
+  const links = [];
+  for (const s of complexes) {
+    const ps = s.platforms.map(id => pills[id]).filter(Boolean);
+    const inT = [ps[0]];
+    while (ps.length && inT.length < ps.length) {   // nearest-neighbour tree
+      let best = null;
+      for (const a of inT) for (const b of ps) if (!inT.includes(b)) { const d = Math.hypot(a.x - b.x, a.y - b.y); if (!best || d < best[0]) best = [d, a, b]; }
+      inT.push(best[2]); links.push([best[1], best[2], false]);
+    }
+  }
+  for (const t of D.transfers) {
+    const [a, b] = t.stations.map(id => ST[id]);
+    if (!a || !b || !a.platforms.length || !b.platforms.length) continue;
+    let best = null;
+    for (const i of a.platforms) for (const j of b.platforms) { const p = pills[i], q = pills[j]; if (!p || !q) continue;
+      const d = Math.hypot(p.x - q.x, p.y - q.y); if (!best || d < best[0]) best = [d, p, q]; }
+    if (best) links.push([best[1], best[2], true]);
+  }
+  ctx.lineCap = 'round';
+  for (const pass of [0, 1]) for (const [a, b, dashed] of links) {
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    ctx.setLineDash(dashed && pass ? [sw * 1.6, sw * 2.2] : []);
+    ctx.strokeStyle = pass ? '#FFFFFF' : '#000000'; ctx.lineWidth = pass ? sw + 0.6 : sw + 4.5; ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  const boxes = [];
+  for (const id in pills) {
+    const q = pills[id], e = q.e;
+    if (minor && q.len === 0 && (ST[N[id].station] || {}).platforms.length === 1) {
+      ctx.beginPath(); ctx.arc(q.x, q.y, Math.max(1.2, lw * 0.55), 0, 7); ctx.fillStyle = '#FFF'; ctx.fill();
+      q.hx = q.hy = lw * 0.6; boxes.push({ x: q.x - q.hx, y: q.y - q.hy, w: 2 * q.hx, h: 2 * q.hy }); continue;
+    }
+    ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(Math.atan2(q.nv[1], q.nv[0]));
+    ctx.beginPath(); ctx.roundRect(-q.len / 2 - ph / 2, -ph / 2, q.len + ph, ph, ph / 2);
+    ctx.fillStyle = '#000'; ctx.fill(); ctx.lineWidth = sw; ctx.strokeStyle = '#FFF'; ctx.stroke();
+    // lanes that pass through without stopping stay visible across the pill
+    for (const l of e.lanes) {
+      const s = e.slot[l];
+      if (q.sk[l] || s < q.s0 || s > q.s1) continue;
+      const lx = s * pitch - q.m;
+      ctx.beginPath(); ctx.moveTo(lx, -ph / 2 - 1.5); ctx.lineTo(lx, ph / 2 + 1.5);
+      ctx.lineCap = 'butt'; ctx.strokeStyle = '#000'; ctx.lineWidth = lw + 2; ctx.stroke();
+      ctx.strokeStyle = laneColor(l); ctx.lineWidth = lw; ctx.stroke();
+    }
+    // cores: one per run of neighbouring lanes that stop the same way
+    let run = null; const runs = [];
+    for (const l of e.lanes) {
+      const s = e.slot[l], k = q.sk[l];
+      if (s < q.s0 - 1e-6 || s > q.s1 + 1e-6) continue;
+      if (k && run && run.k === k) run.b = s; else { run = k ? { a: s, b: s, k } : null; if (run) runs.push(run); }
+    }
+    for (const r of runs) {
+      const x0 = r.a * pitch - q.m - ch / 2, w = (r.b - r.a) * pitch + ch;
+      ctx.beginPath(); ctx.roundRect(x0, -ch / 2, w, ch, ch / 2);
+      if (r.k === 'y') { ctx.fillStyle = '#FFF'; ctx.fill(); }
+      else { ctx.fillStyle = '#000'; ctx.fill(); ctx.lineWidth = 1.1; ctx.strokeStyle = '#FFF'; ctx.stroke(); }
+    }
+    ctx.restore();
+    const hx = Math.abs(q.nv[0]) * (q.len / 2 + ph / 2) + Math.abs(q.t[0]) * ph / 2;
+    const hy = Math.abs(q.nv[1]) * (q.len / 2 + ph / 2) + Math.abs(q.t[1]) * ph / 2;
+    q.hx = hx; q.hy = hy;
+    boxes.push({ x: q.x - hx, y: q.y - hy, w: 2 * hx, h: 2 * hy });
+  }
+  if (selected) for (const id of selected.platforms) { const q = pills[id]; if (!q) continue;
+    ctx.beginPath(); ctx.arc(q.x, q.y, Math.max(q.hx, q.hy) + 6, 0, 7); ctx.strokeStyle = '#FFF'; ctx.lineWidth = 1.5; ctx.stroke(); }
+
+  drawLabels(pills, boxes, zs, lw, pitch);
+
+  const cmp = document.getElementById('compass');
+  cmp.style.display = Math.abs(wrapA(cam.rot)) > 0.03 ? 'flex' : 'none';
+  cmp.firstElementChild.style.transform = `rotate(${cam.rot * 180 / Math.PI}deg)`;
+  history.replaceState(null, '', '#' + [cam.cx, cam.cy, cam.k, cam.rot].map(v => +v.toFixed(3)).join(','));
 }
 
-// interaction
-let drag = null;
-cv.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false }; cv.setPointerCapture(e.pointerId); cv.classList.add('dragging'); });
+// Greedy labels: important stations first, each tries spots around its main pill, avoiding pills, lines and other labels.
+function drawLabels(pills, boxes, zs, lw, pitch) {
+  const fs = zs < 0.22 ? 9 : zs < 0.5 ? 10 : zs < 0.9 ? 11.5 : 13, lh = fs * 1.15, gap = 5;
+  ctx.font = `600 ${fs}px ${FONT}`; ctx.textBaseline = 'middle';
+  const CELL = 48, grid = new Map();
+  const cellsOf = (x0, y0, x1, y1, f) => { for (let gx = Math.floor(x0 / CELL); gx <= Math.floor(x1 / CELL); gx++)
+    for (let gy = Math.floor(y0 / CELL); gy <= Math.floor(y1 / CELL); gy++) f(gx + ',' + gy); };
+  for (const e of D.edges) {
+    const hw = (e.span * pitch + lw) / 2 + 1;
+    for (let i = 0; i < e.scr.length - 1; i++) {
+      const a = e.scr[i], b = e.scr[i + 1], seg = [a[0], a[1], b[0], b[1], hw];
+      cellsOf(Math.min(a[0], b[0]) - hw, Math.min(a[1], b[1]) - hw, Math.max(a[0], b[0]) + hw, Math.max(a[1], b[1]) + hw,
+        k => { (grid.get(k) || grid.set(k, []).get(k)).push(seg); });
+    }
+  }
+  const placed = [];
+  const free = r => {
+    if (r.x < 4 || r.y < 4 || r.x + r.w > W - 4 || r.y + r.h > H - 4) return false;
+    for (const q of placed) if (r.x < q.x + q.w + pad && r.x + r.w + pad > q.x && r.y < q.y + q.h + pad && r.y + r.h + pad > q.y) return false;
+    for (const q of boxes) if (r.x < q.x + q.w && r.x + r.w > q.x && r.y < q.y + q.h && r.y + r.h > q.y) return false;
+    let ok = true;
+    cellsOf(r.x, r.y, r.x + r.w, r.y + r.h, k => { if (!ok) return; for (const s of grid.get(k) || []) if (segRectDist(s[0], s[1], s[2], s[3], r) < s[4]) { ok = false; return; } });
+    return ok;
+  };
+  const prio = s => (s === selected ? 1e6 : 0) + new Set(s.routes.map(r => RT[r] ? RT[r].lane : r)).size * 10 + s.platforms.length * 4 + (terminals.has(s.id) ? 15 : 0);
+  const minPrio = zs < 0.15 ? 25 : zs < 0.3 ? 19 : 0, pad = zs < 0.3 ? 3 : 1;
+  const list = complexes.map(s => {
+    const ps = s.platforms.map(id => pills[id]).filter(Boolean);
+    return { s, ps };
+  }).filter(o => o.ps.length && prio(o.s) >= minPrio && o.ps.some(q => q.x > -60 && q.x < W + 60 && q.y > -60 && q.y < H + 60));
+  list.sort((a, b) => prio(b.s) - prio(a.s));
+  for (const { s, ps } of list) {
+    const lines = wrapName(s.name), w = Math.max(...lines.map(t => ctx.measureText(t).width)) + 2, h = lines.length * lh;
+    const main = ps.slice().sort((a, b) => b.len - a.len)[0];
+    const n = main.nv, t = main.t, dirs = [n, [-n[0], -n[1]]];
+    for (const sg of [1, -1]) dirs.push([(n[0] + t[0] * sg) / Math.SQRT2, (n[1] + t[1] * sg) / Math.SQRT2], [(-n[0] + t[0] * sg) / Math.SQRT2, (-n[1] + t[1] * sg) / Math.SQRT2]);
+    dirs.push(t, [-t[0], -t[1]]);
+    let spot = null;
+    for (const q of [main, ...ps.filter(p => p !== main)]) {
+      for (const v of dirs) {
+        const ext = Math.abs(v[0]) * q.hx + Math.abs(v[1]) * q.hy + gap;
+        const ax = q.x + v[0] * ext, ay = q.y + v[1] * ext;
+        const r = { w, h, al: 'left' };
+        if (Math.abs(v[0]) >= Math.abs(v[1]) * 0.9) { r.x = v[0] > 0 ? ax : ax - w; r.y = ay - h / 2 + (Math.abs(v[1]) > 0.3 ? Math.sign(v[1]) * h / 2 : 0); r.al = v[0] > 0 ? 'left' : 'right'; }
+        else { r.x = ax - w / 2; r.y = v[1] > 0 ? ay : ay - h; r.al = 'center'; }
+        if (free(r)) { spot = r; break; }
+      }
+      if (spot) break;
+    }
+    if (!spot) continue;
+    placed.push(spot);
+    ctx.textAlign = spot.al;
+    const tx = spot.al === 'left' ? spot.x + 1 : spot.al === 'right' ? spot.x + spot.w - 1 : spot.x + spot.w / 2;
+    lines.forEach((t, i) => {
+      const ty = spot.y + lh * (i + 0.5);
+      ctx.lineJoin = 'round'; ctx.lineWidth = 4; ctx.strokeStyle = '#000'; ctx.strokeText(t, tx, ty);
+      ctx.fillStyle = '#FFF'; ctx.fillText(t, tx, ty);
+    });
+  }
+  ctx.textAlign = 'left';
+}
+
+// ------------------------------------------------------------------ interaction: drag, wheel/pinch zoom, rotate
+let raf = 0;
+const redraw = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
+const ptrs = new Map(); let g = null;
+function pivot(c0, pm, s, k, rot) { const dx = s[0] - W / 2, dy = s[1] - H / 2, c = Math.cos(rot), sn = Math.sin(rot);
+  return { cx: pm[0] - (dx * c + dy * sn) / k, cy: pm[1] - (-dx * sn + dy * c) / k, k, rot }; }
+cv.addEventListener('pointerdown', e => {
+  cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.clientX, e.clientY]); cv.classList.add('dragging');
+  const ids = [...ptrs.keys()];
+  if (ids.length === 1) g = { type: 'one', s: [e.clientX, e.clientY], cam: { ...cam }, moved: false };
+  else if (ids.length === 2) { const a = ptrs.get(ids[0]), b = ptrs.get(ids[1]), mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    g = { type: 'pinch', ids, cam: { ...cam }, d0: Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, a0: Math.atan2(b[1] - a[1], b[0] - a[0]), pm: inv(...mid), moved: true }; }
+});
 cv.addEventListener('pointermove', e => {
-  if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-  if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-  view.x = drag.vx + dx; view.y = drag.vy + dy; requestAnimationFrame(draw);
+  if (!ptrs.has(e.pointerId) || !g) return;
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (g.type === 'pinch') {
+    const a = ptrs.get(g.ids[0]), b = ptrs.get(g.ids[1]); if (!a || !b) return;
+    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    Object.assign(cam, pivot(g.cam, g.pm, mid, clamp(g.cam.k * Math.hypot(b[0] - a[0], b[1] - a[1]) / g.d0, 0.12, 12),
+      g.cam.rot + wrapA(Math.atan2(b[1] - a[1], b[0] - a[0]) - g.a0)));
+  } else {
+    const dx = e.clientX - g.s[0], dy = e.clientY - g.s[1], c = Math.cos(g.cam.rot), s = Math.sin(g.cam.rot);
+    if (Math.abs(dx) + Math.abs(dy) > 3) g.moved = true;
+    cam.cx = g.cam.cx - (dx * c + dy * s) / g.cam.k; cam.cy = g.cam.cy - (-dx * s + dy * c) / g.cam.k;
+  }
+  redraw();
 });
-cv.addEventListener('pointerup', e => {
-  cv.classList.remove('dragging');
-  if (drag && !drag.moved) pick(e.clientX, e.clientY);
-  drag = null;
-});
+const up = e => {
+  ptrs.delete(e.pointerId); cv.classList.toggle('dragging', ptrs.size > 0);
+  if (g && g.type === 'one' && !g.moved && ptrs.size === 0) pick(e.clientX, e.clientY);
+  const rest = [...ptrs.values()];
+  g = rest.length ? { type: 'one', s: rest[0], cam: { ...cam }, moved: true } : null;
+};
+cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
 cv.addEventListener('wheel', e => {
   e.preventDefault();
-  const f = Math.exp(-e.deltaY * 0.0015), k = Math.min(8, Math.max(0.15, view.k * f)), r = k / view.k;
-  view.x = e.clientX - (e.clientX - view.x) * r; view.y = e.clientY - (e.clientY - view.y) * r; view.k = k;
-  requestAnimationFrame(draw);
+  const s = [e.clientX, e.clientY], pm = inv(...s), dy = e.deltaY * (e.deltaMode === 1 ? 16 : 1), dx = e.deltaX * (e.deltaMode === 1 ? 16 : 1);
+  if (e.altKey || e.shiftKey) Object.assign(cam, pivot(cam, pm, s, cam.k, cam.rot + (dy || dx) * 0.0035));
+  else Object.assign(cam, pivot(cam, pm, s, clamp(cam.k * Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0022)), 0.12, 12), cam.rot));
+  redraw();
 }, { passive: false });
+document.getElementById('compass').onclick = () => {
+  const r0 = cam.rot, t0 = performance.now(), ctr = [W / 2, H / 2], pm = inv(...ctr);
+  const step = now => { const t = Math.min(1, (now - t0) / 450), k = 1 - Math.pow(1 - t, 3);
+    Object.assign(cam, pivot(cam, pm, ctr, cam.k, r0 - wrapA(r0) * k)); draw(); if (t < 1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+};
 addEventListener('resize', () => { resize(); draw(); });
-['showBase', 'showBands', 'showRoutes'].forEach(id => document.getElementById(id).onchange = draw);
+document.getElementById('optBase').onchange = e => { opt.base = e.target.checked; draw(); };
+document.getElementById('optGraph').onchange = e => { opt.graph = e.target.checked; draw(); };
+document.getElementById('optRef').onchange = e => {
+  opt.ref = e.target.checked;
+  if (opt.ref && !REF) fetch('data/reference/nyc-subway-4d.json').then(r => r.json()).then(d => { REF = d; draw(); }); else draw();
+};
 
 function pick(sx, sy) {
-  let best = null, bd = 12;
-  for (const s of D.stations) for (const m of s.markers) {
-    const [x, y] = toScreen(m.x, m.y), d = Math.hypot(x - sx, y - sy);
-    if (d < bd) { bd = d; best = s; }
-  }
+  let best = null, bd = 16;
+  for (const s of complexes) for (const id of s.platforms) { const n = N[id], [x, y] = scr(n.x, n.y), d = Math.hypot(x - sx, y - sy); if (d < bd) { bd = d; best = s; } }
   selected = best;
   const info = document.getElementById('info');
-  info.innerHTML = best ? `<b>${best.name}</b> <small>(${best.id})</small><br>${best.system}` +
-    (best.routes.length ? ` · ${best.routes.join(' ')}` : '') +
-    `<br><small>${best.markers.map(m => m.style).filter((v, i, a) => a.indexOf(v) === i).join(', ')}</small>` +
-    (best.note ? `<br><small>${best.note}</small>` : '') : '';
+  if (!best) { info.style.display = 'none'; draw(); return; }
+  const lanes = [...new Set(best.routes.map(r => RT[r] ? RT[r].lane : r))];
+  info.innerHTML = `<b>${best.name}</b><br>` + lanes.map(l => { const r = RT[l] || {};
+    return `<span class="bul" style="background:${laneColor(l)};color:${'NQRW'.includes(l) ? '#000' : '#fff'}">${r.label || l}</span>`; }).join('') +
+    (best.note ? `<br><small>${best.note}</small>` : '') + `<br><small>${best.platforms.length} platform${best.platforms.length > 1 ? 's' : ''} · ${best.id}</small>`;
+  info.style.display = 'block';
   draw();
 }
 </script>

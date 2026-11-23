@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference 4D fit preview</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; }
+  canvas.dragging { cursor: grabbing; }
+  #panel { position: fixed; top: 12px; left: 12px; background: rgba(255,255,255,.95); border-radius: 8px;
+           box-shadow: 0 1px 6px rgba(0,0,0,.2); padding: 10px 12px; max-width: 280px; font-size: 13px; }
+  #routes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .bullet { width: 24px; height: 24px; border-radius: 50%; border: 0; font-weight: 700; font-size: 13px; cursor: pointer; }
+  .bullet.diamond { border-radius: 3px; transform: rotate(45deg) scale(.8); }
+  .bullet.diamond span { display: inline-block; transform: rotate(-45deg); }
+  .bullet.off { opacity: .25; }
+  #info { margin-top: 8px; min-height: 1em; }
+  label { user-select: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <b>Reference 4D fit (source lanes)</b><br>
+  <label><input type="checkbox" id="showBase" checked> basemap</label>
+  <label><input type="checkbox" id="showBands" checked> drawn bands</label>
+  <label><input type="checkbox" id="showRoutes"> route paths</label>
+  <div id="routes"></div>
+  <div id="info">Scroll to zoom, drag to pan. Click a bullet to highlight a route; click a station for details.</div>
+</div>
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let D, BASE, W = 0, H = 0, dpr = 1;
+const view = { k: 0.3, x: 0, y: 0 };            // screen = world * k + (x, y)
+let highlight = null, selected = null;
+const routeOn = {};
+
+Promise.all([fetch('../../data/reference/nyc-subway-4d.json').then(r => r.json()),
+             fetch('../../data/basemap.json').then(r => r.json())]).then(([d, b]) => {
+  D = d; BASE = b;
+  D.stationById = Object.fromEntries(D.stations.map(s => [s.id, s]));
+  for (const k of ['water', 'land', 'parks', 'boundaries']) BASE[k] = BASE[k].map(p => new Path2D(p));
+  const box = document.getElementById('routes');
+  for (const r of D.routes) {
+    routeOn[r.id] = true;
+    const b = document.createElement('button');
+    b.className = 'bullet' + (r.bullet === 'diamond' ? ' diamond' : '');
+    b.style.background = r.color; b.style.color = r.textColor;
+    b.innerHTML = `<span>${r.label}</span>`; b.title = `${r.id}: ${r.name}`;
+    b.onclick = () => { highlight = highlight === r.id ? null : r.id;
+      document.querySelectorAll('.bullet').forEach(x => x.classList.toggle('off', !!highlight && x !== b)); draw(); };
+    box.appendChild(b);
+  }
+  resize(); fit(); draw();
+});
+
+function resize() {
+  dpr = window.devicePixelRatio || 1; W = innerWidth; H = innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+}
+function fit() {
+  const [, , vw, vh] = D.meta.coordinateSpace.viewBox;
+  view.k = Math.min(W / vw, H / vh); view.x = (W - vw * view.k) / 2; view.y = (H - vh * view.k) / 2;
+}
+const toScreen = (x, y) => [x * view.k + view.x, y * view.k + view.y];
+
+function strokeLines(lines, color, px, dash) {
+  ctx.beginPath();
+  for (const l of lines) { ctx.moveTo(l[0][0], l[0][1]); for (let i = 1; i < l.length; i++) ctx.lineTo(l[i][0], l[i][1]); }
+  ctx.strokeStyle = color; ctx.lineWidth = px / view.k; ctx.setLineDash(dash ? [6 / view.k, 1.5 / view.k] : []); ctx.stroke();
+}
+
+function draw() {
+  if (!D) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#E4EDF9'; ctx.fillRect(0, 0, W, H);
+  ctx.setTransform(view.k * dpr, 0, 0, view.k * dpr, view.x * dpr, view.y * dpr);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  // feature sizes stay roughly constant on screen: widths are in px, divided by zoom
+  const zoomBoost = Math.min(1.6, Math.max(0.6, Math.sqrt(view.k / 0.35)));
+  const bandPx = 4.2 * zoomBoost;
+  if (document.getElementById('showBase').checked) {
+    ctx.fillStyle = BASE.meta.colors.land; BASE.land.forEach(p => ctx.fill(p));
+    ctx.fillStyle = BASE.meta.colors.parks; BASE.parks.forEach(p => ctx.fill(p));
+  }
+  const dim = id => highlight && highlight !== id;
+  if (document.getElementById('showBands').checked) {
+    for (const b of D.bands) {
+      const faded = highlight && !b.routes.includes(highlight);
+      ctx.globalAlpha = faded ? 0.15 : 1;
+      strokeLines(b.lines, b.color, b.system === 'path' || b.system === 'airtrain' ? bandPx * 0.45 : bandPx, b.dashed);
+    }
+  }
+  if (document.getElementById('showRoutes').checked || highlight) {
+    for (const r of D.routes) {
+      if (highlight && r.id !== highlight) continue;
+      ctx.globalAlpha = 1;
+      for (const p of r.patterns) { strokeLines([p.path], '#000', bandPx + 2, false); strokeLines([p.path], r.color, bandPx, false); }
+    }
+  }
+  ctx.globalAlpha = 1; ctx.setLineDash([]);
+  for (const c of D.connectors) strokeLines([c.line], c.type === 'part-time' ? '#999' : '#4D4D4D', bandPx * 0.55, c.type !== 'in-station');
+  // markers
+  const r0 = Math.max(1.6, 1.45 * zoomBoost);
+  for (const s of D.stations) {
+    const faded = highlight && !s.routes.includes(highlight);
+    ctx.globalAlpha = faded ? 0.2 : 1;
+    for (const m of s.markers) {
+      ctx.beginPath(); ctx.arc(m.x, m.y, (m.style.startsWith('interchange') ? r0 * 1.2 : r0) / view.k, 0, 7);
+      ctx.fillStyle = m.style === 'except-rush-peak' ? '#999' : '#fff'; ctx.fill();
+      if (m.style.startsWith('interchange') || s === selected) {
+        ctx.lineWidth = (s === selected ? 2 : 1) / view.k; ctx.strokeStyle = s === selected ? '#e00' : '#4D4D4D'; ctx.stroke();
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
+  drawLabels();
+}
+
+// Greedy label placement with collision avoidance, in screen space.
+function drawLabels() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const size = Math.round(Math.min(14, Math.max(10, 9 + view.k * 4)));
+  ctx.font = `600 ${size}px -apple-system, "Helvetica Neue", Arial, sans-serif`;
+  ctx.textBaseline = 'middle';
+  const placed = [];
+  const hit = r => placed.some(q => r.x < q.x + q.w && r.x + r.w > q.x && r.y < q.y + q.h && r.y + r.h > q.y);
+  // reserve marker footprints so labels don't cover stations
+  for (const s of D.stations) for (const m of s.markers) { const [x, y] = toScreen(m.x, m.y); placed.push({ x: x - 3, y: y - 3, w: 6, h: 6 }); }
+  const prio = s => (s === selected ? 1e6 : 0) + (highlight && s.routes.includes(highlight) ? 1e5 : 0)
+                  + s.routes.length * 10 + s.markers.length + (s.system === 'subway' ? 5 : 0);
+  const order = [...D.stations].sort((a, b) => prio(b) - prio(a));
+  for (const s of order) {
+    if (highlight && !s.routes.includes(highlight) && s !== selected) continue;
+    const xs = s.markers.map(m => toScreen(m.x, m.y));
+    const minX = Math.min(...xs.map(p => p[0])), maxX = Math.max(...xs.map(p => p[0]));
+    const minY = Math.min(...xs.map(p => p[1])), maxY = Math.max(...xs.map(p => p[1]));
+    if (maxX < -50 || minX > W + 50 || maxY < -20 || minY > H + 20) continue;
+    const w = ctx.measureText(s.name).width + 4, h = size + 2, cy = (minY + maxY) / 2, cx = (minX + maxX) / 2, g = 6;
+    const cands = [
+      { x: maxX + g, y: cy - h / 2 }, { x: minX - g - w, y: cy - h / 2 },
+      { x: cx - w / 2, y: minY - g - h }, { x: cx - w / 2, y: maxY + g },
+      { x: maxX + g, y: minY - g - h }, { x: maxX + g, y: maxY + g },
+      { x: minX - g - w, y: minY - g - h }, { x: minX - g - w, y: maxY + g }];
+    const spot = cands.find(r => !hit({ ...r, w, h }));
+    if (!spot) continue;
+    placed.push({ ...spot, w, h });
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.fillStyle = s.system === 'subway' || s.system === 'sir' ? '#111' : '#7a5c8a';
+    ctx.strokeText(s.name, spot.x + 2, spot.y + h / 2); ctx.fillText(s.name, spot.x + 2, spot.y + h / 2);
+  }
+}
+
+// interaction
+let drag = null;
+cv.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false }; cv.setPointerCapture(e.pointerId); cv.classList.add('dragging'); });
+cv.addEventListener('pointermove', e => {
+  if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+  view.x = drag.vx + dx; view.y = drag.vy + dy; requestAnimationFrame(draw);
+});
+cv.addEventListener('pointerup', e => {
+  cv.classList.remove('dragging');
+  if (drag && !drag.moved) pick(e.clientX, e.clientY);
+  drag = null;
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = Math.exp(-e.deltaY * 0.0015), k = Math.min(8, Math.max(0.15, view.k * f)), r = k / view.k;
+  view.x = e.clientX - (e.clientX - view.x) * r; view.y = e.clientY - (e.clientY - view.y) * r; view.k = k;
+  requestAnimationFrame(draw);
+}, { passive: false });
+addEventListener('resize', () => { resize(); draw(); });
+['showBase', 'showBands', 'showRoutes'].forEach(id => document.getElementById(id).onchange = draw);
+
+function pick(sx, sy) {
+  let best = null, bd = 12;
+  for (const s of D.stations) for (const m of s.markers) {
+    const [x, y] = toScreen(m.x, m.y), d = Math.hypot(x - sx, y - sy);
+    if (d < bd) { bd = d; best = s; }
+  }
+  selected = best;
+  const info = document.getElementById('info');
+  info.innerHTML = best ? `<b>${best.name}</b> <small>(${best.id})</small><br>${best.system}` +
+    (best.routes.length ? ` · ${best.routes.join(' ')}` : '') +
+    `<br><small>${best.markers.map(m => m.style).filter((v, i, a) => a.indexOf(v) === i).join(', ')}</small>` +
+    (best.note ? `<br><small>${best.note}</small>` : '') : '';
+  draw();
+}
+</script>
+</body>
+</html>
