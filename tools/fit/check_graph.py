@@ -33,4 +33,22 @@ for n in d['nodes']:
         es = [e for e in d['edges'] if n['id'] in (e['from'], e['to'])]
         other = [x for e in es for x in (e['from'], e['to']) if x != n['id']]
         print('tail end', n['id'], n['x'], n['y'], 'next to', [S[N[o]['station']]['name'] if N[o].get('station') else N[o]['kind'] for o in other])
+# report (not a failure): wobbles, two direction changes within 15 units along a route that aren't one bend
+wob = set()
+for r in d['routes']:
+    for pt in r['patterns']:
+        P = []
+        for eid, dr in pt['edges']:
+            seg = E[eid]['path'] if dr > 0 else E[eid]['path'][::-1]
+            P.extend(seg if not P else seg[1:])
+        turns = []
+        for i in range(1, len(P) - 1):
+            u = (P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]); v = (P[i + 1][0] - P[i][0], P[i + 1][1] - P[i][1])
+            if math.hypot(*u) < 1e-6 or math.hypot(*v) < 1e-6: continue
+            ang = math.degrees(math.atan2(u[0] * v[1] - u[1] * v[0], u[0] * v[0] + u[1] * v[1]))
+            if abs(ang) > 4: turns.append((i, ang))
+        for (i, a1), (j, a2) in zip(turns, turns[1:]):
+            if sum(math.dist(P[k], P[k + 1]) for k in range(i, j)) < 15 and (a1 * a2 < 0 or abs(a1) + abs(a2) < 60):
+                wob.add((round(P[i][0] / 20), round(P[i][1] / 20)))
+print('wobble spots (report only):', len(wob))
 print('problems:', bad)

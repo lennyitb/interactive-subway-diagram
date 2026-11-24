@@ -76,9 +76,13 @@ function prepare() {
     e.tracks.forEach(g => g.forEach((l, li) => { if (!first) u += 1 + (li === 0 ? GAPK : 0); first = false; e.slot[l] = u; }));
     for (const l in e.slot) e.slot[l] -= u / 2;
     e.span = u;
+    if (e.anchor && e.anchor in e.slot) { const a = e.slot[e.anchor]; for (const l in e.slot) e.slot[l] -= a; }   // reference lane on the centreline
+    e.slot0 = { ...e.slot };
   }
   inc = {};
   for (const e of D.edges) for (const n of [e.from, e.to]) (inc[n] = inc[n] || []).push(e);
+  shiftBranches(); inheritAnchors(); shiftBranches();
+  for (const e of D.edges) e.half = Math.max(0, ...Object.values(e.slot).map(Math.abs));
   // which lanes stop at each platform, solid (always) or hollow (part-time)
   stopKinds = {};
   for (const r of D.routes) for (const p of r.patterns) p.stopNodes.forEach((n, i) => {
@@ -102,6 +106,67 @@ function prepare() {
   for (const r of D.routes) for (const p of r.patterns) { terminals.add(p.stops[0]); terminals.add(p.stops[p.stops.length - 1]); }
 }
 
+// A branch carrying only lanes from a trunk keeps the lane positions it had on the trunk instead of re-centring
+// on its own centreline, all along its stretch, whether it carries straight on or turns: lanes then run
+// concentric through the junction's bend and never have to shift sideways there.
+function shiftBranches() {
+  const leave = (e, n) => { const P = e.path, [a, b] = n === e.from ? [P[0], P[1]] : [P[P.length - 1], P[P.length - 2]];
+    const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l]; };
+  const size = n => Math.max(0, ...(inc[n] || []).map(e => e.lanes.length));
+  const done = new Set(D.edges.filter(e => e.anchor)), lim = -Math.cos(10 * Math.PI / 180);   // anchored edges keep their own layout
+  // biggest trunks first; at equal size stations first, so branch lanes sit settled at platforms and any
+  // remaining shift happens at a junction
+  for (const n of [...D.nodes].sort((a, b) => size(b.id) - size(a.id) || (b.kind === 'platform') - (a.kind === 'platform'))) {
+    const es = [...(inc[n.id] || [])].sort((a, b) => b.lanes.length - a.lanes.length);
+    for (const e1 of es) for (const e2 of es) {
+      if (e2 === e1 || done.has(e2) || e2.lanes.length >= e1.lanes.length || !e2.lanes.every(l => l in e1.slot)) continue;
+      // e1's slots seen from e2's frame: flip once per edge whose direction runs against the travel
+      const f = (e1.to === n.id ? 1 : -1) * (e2.from === n.id ? 1 : -1);
+      // only when the branch keeps the trunk's order: copying positions must never reorder lanes
+      const mine = [...e2.lanes].sort((a, b) => e2.slot[a] - e2.slot[b]).join(), theirs = [...e2.lanes].sort((a, b) => e1.slot[a] * f - e1.slot[b] * f).join();
+      if (mine !== theirs) continue;
+      // ... and only from a trunk where its lanes keep the spacing (track grouping) they have on the branch
+      const ord = [...e2.lanes].sort((a, b) => e2.slot[a] - e2.slot[b]);
+      if (ord.some((l, i) => i && Math.abs((e2.slot[l] - e2.slot[ord[i - 1]]) - (e1.slot[l] - e1.slot[ord[i - 1]]) * f) > 0.01)) continue;
+      // each lane takes its exact trunk position (gaps included), carried along the plain stretch
+      let g = f, e = e2, x = n.id;
+      while (e && !done.has(e)) {
+        for (const l in e.slot) e.slot[l] = e1.slot[l] * g;
+        e.src = e1;
+        done.add(e);
+        const y = e.from === x ? e.to : e.from, nx = (inc[y] || []).filter(o => o !== e);
+        if (nx.length !== 1 || nx[0].lanes.length !== e.lanes.length || !nx[0].lanes.every(l => l in e.slot)) break;
+        const step = (e.to === y ? 1 : -1) * (nx[0].from === y ? 1 : -1);
+        // the chain ends where the lanes regroup (their own spacing changes): the shift happens there
+        const lanes = [...e.lanes].sort((a, b) => e.slot0[a] - e.slot0[b]);
+        if (lanes.some((l, i) => i && Math.abs((e.slot0[l] - e.slot0[lanes[i - 1]]) - (nx[0].slot0[l] - nx[0].slot0[lanes[i - 1]]) * step) > 0.01)) break;
+        g *= step;
+        x = y; e = nx[0];
+      }
+    }
+  }
+}
+// An anchored stretch (layout_def.ANCHOR) keeps its lane where it was arriving at the stretch's first node, so
+// it carries straight on; the other lanes are placed around it.
+function inheritAnchors() {
+  const seen = new Set();
+  for (const e0 of D.edges) {
+    if (!e0.anchor || seen.has(e0)) continue;
+    const L = e0.anchor, sign = new Map([[e0, 1]]), q = [e0];
+    let ref = null;
+    while (q.length) {
+      const e = q.pop(); seen.add(e);
+      for (const n of [e.from, e.to]) for (const o of inc[n] || []) {
+        if (o === e || !(L in o.slot)) continue;
+        const f = sign.get(e) * (e.to === n ? 1 : -1) * (o.from === n ? 1 : -1);   // o's frame -> e0's frame
+        if (o.anchor === L) { if (!sign.has(o)) { sign.set(o, f); q.push(o); } }
+        else if (n === e.anchorFrom && ref === null && !(o.src && o.src.anchor)) ref = o.slot[L] * f;
+      }
+    }
+    if (!ref) continue;
+    for (const [e, s] of sign) for (const l in e.slot) e.slot[l] += ref * s;
+  }
+}
 function resize() {
   dpr = window.devicePixelRatio || 1; W = innerWidth; H = innerHeight;
   cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
@@ -117,87 +182,209 @@ function edgeTangent(e, atNode) {
   return [dx / l, dy / l];
 }
 // Build a lane polyline for a route pattern: centreline vertices with a per-vertex offset (px, + = right of travel).
-// Where the lane changes slot at a node it eases across along the path, on the side of the narrower edge,
-// so a trunk keeps its lanes straight up to a junction and the branch peels off.
+// The centreline's corners are rounded first; then, where the lane changes slot at a node, it eases across
+// along the rounded path on the side of the narrower edge, so a trunk keeps its lanes straight up to a
+// junction and the branch peels off.
 const smooth = t => t * t * (3 - 2 * t);
+// Does the lane turn off at this joint, away from a trunk that carries straight on through the node?
+function peels(j) {
+  if (!j.ein) return false;
+  const dirAt = (e, n) => { const P = e.path, [a, b] = n === e.from ? [P[0], P[1]] : [P[P.length - 1], P[P.length - 2]];
+    const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l]; };
+  const wide = j.ein.span >= j.eout.span ? j.ein : j.eout, dw = dirAt(wide, j.node), lim = Math.cos(10 * Math.PI / 180);
+  const di = dirAt(j.ein, j.node), dout = dirAt(j.eout, j.node);
+  if (-(di[0] * dout[0] + di[1] * dout[1]) > Math.cos(30 * Math.PI / 180)) return false;   // not a real turn
+  return (inc[j.node] || []).some(o => o !== j.ein && o !== j.eout && (([x, y]) => -(x * dw[0] + y * dw[1]) > lim)(dirAt(o, j.node)));
+}
 function laneVerts(p, lane, pitch, R0) {
   const V = [], joints = [];
-  let prevSpan = null;
+  let prevSpan = null, prevLanes = null, prevRe = false, prevE = null;
   for (const [eid, dir] of p.edges) {
     const e = E[eid], o = (e.slot[lane] ?? 0) * pitch * dir;
     const pts = dir > 0 ? e.scr : [...e.scr].reverse();
     if (V.length) {
       const last = V[V.length - 1];
-      if (Math.abs(last.o - o) > 0.01) joints.push({ i: V.length - 1, oIn: last.o, oOut: o, side: Math.sign(prevSpan - e.span) });
+      if (Math.abs(last.o - o) > 0.01) joints.push({ vi: V.length - 1, oIn: last.o, oOut: o, side: Math.sign(prevSpan - e.span), re: (prevRe ? -1 : 0) + (e.regroup ? 1 : 0), ein: prevE, eout: e, node: dir > 0 ? e.from : e.to,
+        same: [...prevE.lanes].sort().join() === [...e.lanes].sort().join() });
     }
-    const hs = e.span * pitch / 2;
+    const hs = e.half * pitch;
     if (V.length) V[V.length - 1].hs = Math.max(V[V.length - 1].hs, hs);
-    for (let i = V.length ? 1 : 0; i < pts.length; i++) V.push({ x: pts[i][0], y: pts[i][1], o, hs });
-    prevSpan = e.span;
+    if (!V.length) V.push({ x: pts[0][0], y: pts[0][1], o, hs, node: dir > 0 ? e.from : e.to });
+    for (let i = 1; i < pts.length; i++) V.push({ x: pts[i][0], y: pts[i][1], o, hs, node: i === pts.length - 1 ? (dir > 0 ? e.to : e.from) : null });
+    if (prevLanes !== null && prevLanes !== e.lanes.join()) V[V.length - pts.length].junction = true;   // the track changes here
+    prevSpan = e.span; prevLanes = e.lanes.join(); prevRe = !!e.regroup; prevE = e;
   }
-  if (!joints.length) return roundCentre(V, R0);
+  const C = roundCentre(V, R0);                 // points carry src: the centreline vertex they came from
+  if (!joints.length) return C.map(q => ({ x: q.x, y: q.y, o: V[q.src].o }));
   const S = [0];
-  for (let i = 1; i < V.length; i++) S.push(S[i - 1] + Math.hypot(V[i].x - V[i - 1].x, V[i].y - V[i - 1].y));
+  for (let i = 1; i < C.length; i++) S.push(S[i - 1] + Math.hypot(C[i].x - C[i - 1].x, C[i].y - C[i - 1].y));
   const total = S[S.length - 1];
-  // transition windows along the path
-  for (const j of joints) {
-    const L = clamp(Math.abs(j.oOut - j.oIn) * 4.5, 10, 70), s = S[j.i];
-    if (j.side > 0) { j.w0 = s; j.w1 = s + L; } else if (j.side < 0) { j.w0 = s - L; j.w1 = s; } else { j.w0 = s - L / 2; j.w1 = s + L / 2; }
+  for (const j of joints) {           // where the joint vertex ended up along the rounded path
+    let sum = 0, n = 0;
+    C.forEach((q, i) => { if (q.src === j.vi) { sum += S[i]; n++; } });
+    j.s = n ? sum / n : 0;
   }
-  for (let k = 0; k < joints.length; k++) {
-    const j = joints[k], lo = k ? joints[k - 1].w1 : 0, hi = k < joints.length - 1 ? (S[j.i] + S[joints[k + 1].i]) / 2 : total;
-    j.w0 = Math.max(j.w0, lo, k ? (S[joints[k - 1].i] + S[j.i]) / 2 : 0); j.w1 = Math.min(j.w1, hi);
-    if (j.w1 - j.w0 < 2) { const m = S[j.i]; j.w0 = m - 1; j.w1 = m + 1; }
+  // Each lane shift happens on the straight next to its junction, never on a bend, and as gently as that
+  // straight allows: lanes run concentric through curves and drift across over up to ~12 lane widths.
+  const arcs = [];
+  const turn = vi => { const a = V[vi - 1], b = V[vi], c = V[vi + 1]; if (!a || !c) return 0;
+    const t1 = Math.atan2(b.y - a.y, b.x - a.x), t2 = Math.atan2(c.y - b.y, c.x - b.x);
+    return Math.abs(Math.atan2(Math.sin(t2 - t1), Math.cos(t2 - t1))); };
+  for (let i = 0; i < C.length; ) {
+    let k = i; while (k + 1 < C.length && C[k + 1].src === C[i].src) k++;
+    if (k > i) {
+      // a curve drawn as many gentle vertices close together is one bend
+      const nd = V[C[i].src].node, last = arcs[arcs.length - 1];
+      const gentle = turn(C[i].src) < 0.18 && !(N[nd] && N[nd].kind === 'platform');   // (never across a station)
+      if (last && gentle && last.gentle && S[i] - last[1] < R0) { last[1] = S[k]; last.curve = true; }
+      else { const a = [S[i], S[k]]; a.gentle = gentle; arcs.push(a); }
+    }
+    i = k + 1;
   }
+  const arcAt = s => arcs.find(a => a[0] - 0.5 <= s && s <= a[1] + 0.5);
+  const segAt = s => { let i = 1; while (i < S.length - 1 && S[i] < s) i++; return i; };
+  const ptAt = s => { const i = segAt(s), t = (s - S[i - 1]) / Math.max(1e-9, S[i] - S[i - 1]);
+    return [C[i - 1].x + (C[i].x - C[i - 1].x) * t, C[i - 1].y + (C[i].y - C[i - 1].y) * t]; };
+  const dirAt = s => { const i = segAt(s), dx = C[i].x - C[i - 1].x, dy = C[i].y - C[i - 1].y, l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l]; };
+  // A lane that changes position at a bend: its straight line in (offset oIn) and line out (offset oOut) meet
+  // at one corner; round it. Returns the replacement points, or null if the corner does not fit its straights.
+  function mitre(j, at, lo, hi) {
+    const d1 = dirAt(at[0] - 0.5), d2 = dirAt(at[1] + 0.5), cr = d1[0] * d2[1] - d1[1] * d2[0];
+    if (Math.abs(cr) < 0.2) return null;
+    const c0 = ptAt(at[0]), c1 = ptAt(at[1]);
+    const P1 = [c0[0] - d1[1] * j.oIn, c0[1] + d1[0] * j.oIn], P2 = [c1[0] - d2[1] * j.oOut, c1[1] + d2[0] * j.oOut];
+    const u = ((P2[0] - P1[0]) * d2[1] - (P2[1] - P1[1]) * d2[0]) / cr;
+    const Y = [P1[0] + d1[0] * u, P1[1] + d1[1] * u];
+    const th = Math.acos(clamp(d1[0] * d2[0] + d1[1] * d2[1], -1, 1)), sg = Math.sign(cr);
+    const r = Math.max(2, (at[1] - at[0]) / th - sg * (j.oIn + j.oOut) / 2), t = r * Math.tan(th / 2);
+    const T1 = [Y[0] - d1[0] * t, Y[1] - d1[1] * t], T2 = [Y[0] + d2[0] * t, Y[1] + d2[1] * t];
+    const s0 = at[0] + (T1[0] - P1[0]) * d1[0] + (T1[1] - P1[1]) * d1[1], s1 = at[1] + (T2[0] - P2[0]) * d2[0] + (T2[1] - P2[1]) * d2[1];
+    const from = Math.min(s0, at[0]), to = Math.max(s1, at[1]);
+    if (from < lo + 1 || to > hi - 1) return null;
+    const pts = [];
+    if (s0 > at[0]) pts.push({ x: P1[0], y: P1[1], s: at[0] });
+    const cx = T1[0] - d1[1] * r * sg, cy = T1[1] + d1[0] * r * sg, a0 = Math.atan2(T1[1] - cy, T1[0] - cx);
+    for (let k = 0; k <= 12; k++) { const a = a0 + sg * th * k / 12; pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r, s: s0 + (s1 - s0) * k / 12 }); }
+    if (s1 < at[1]) pts.push({ x: P2[0], y: P2[1], s: at[1] });
+    return { from, to, pts };
+  }
+  // stations along the way: a shift never runs under one, so pills always sit on settled lanes
+  const plats = [];
+  // and junctions where the track changes width: a lane shift stays on the stretch of its own junction
+  C.forEach((q, i) => { const v = V[q.src], nd = v.node; if (nd && ((N[nd] && N[nd].kind === 'platform') || v.junction)) plats.push([S[i], nd]); });
+  joints.forEach((j, k) => {
+    const want = clamp(Math.abs(j.oOut - j.oIn) * 7, 16, 240);
+    const at = arcAt(j.s) || [j.s, j.s], own = V[j.vi].node;
+    const lo = Math.max(0, ...arcs.filter(a => a[1] <= at[0] + 0.5 && a !== arcAt(j.s)).map(a => a[1]),
+      ...plats.filter(p => p[0] < at[0] - 0.5 && p[1] !== own).map(p => p[0] + 1), k ? joints[k - 1].w1 ?? 0 : 0);
+    const hi = Math.min(total, ...arcs.filter(a => a[0] >= at[1] - 0.5 && a !== arcAt(j.s)).map(a => a[0]),
+      ...plats.filter(p => p[0] > at[1] + 0.5 && p[1] !== own).map(p => p[0] - 1), k < joints.length - 1 ? joints[k + 1].s : total);
+    const before = [lo, at[0]], after = [at[1], hi], room = w => w[1] - w[0];
+    // also the intervals ignoring bends (only stations and other shifts bound them)
+    const lo2 = Math.max(0, ...plats.filter(p => p[0] < j.s - 0.5 && p[1] !== own).map(p => p[0] + 1), k ? joints[k - 1].w1 ?? 0 : 0);
+    const hi2 = Math.min(total, ...plats.filter(p => p[0] > j.s + 0.5 && p[1] !== own).map(p => p[0] - 1), k < joints.length - 1 ? joints[k + 1].s : total);
+    // the shift belongs on the narrower edge, where the lane has already left the lanes it shares track with;
+    // on that side use the straight if it is long enough, otherwise glide through the bend as well
+    // (lanes that only regroup at the same width shift on the hand-grouped stretch, where the new grouping starts)
+    // lanes that only regroup at a plain junction (no lanes join or leave, no station): the hand-placed
+    // point is where the change happens, so the shift is centred on it
+    if (j.same && !(N[j.node] && N[j.node].kind === 'platform') && j.ein.lanes.length === 1 && !arcAt(j.s) && hi - lo > 2) {
+      // a lone lane: it moves across along the whole straight, which just stays a straight line
+      [j.w0, j.w1] = [lo, hi]; j.linear = true;
+      return;
+    }
+    if (j.same && !(N[j.node] && N[j.node].kind === 'platform')) {
+      const half = want / 2, a0 = Math.max(lo2, j.s - half), a1 = Math.min(hi2, j.s + half), h = Math.min(j.s - a0, a1 - j.s);
+      [j.w0, j.w1] = h >= 1 ? [j.s - h, j.s + h] : [j.s - 1, j.s + 1];
+      return;
+    }
+    const pref = j.side < 0 ? 'b' : j.side > 0 ? 'a' : j.re > 0 ? 'a' : j.re < 0 ? 'b' : room(before) >= room(after) ? 'b' : 'a';
+    let w = pref === 'b' ? before : after;
+    const wide = pref === 'b' ? [lo2, j.s] : [j.s, hi2];
+    let through = 0;   // bend length the window has to cross
+    const cv = arcAt(j.s);
+    if (cv && cv.curve && (pref === 'b' ? j.s - cv[0] : cv[1] - j.s) > 2) {
+      // the lane joins at the end of a drawn curve: it moves across along the whole curve
+      w = pref === 'b' ? [Math.max(lo, cv[0]), j.s] : [j.s, Math.min(hi, cv[1])];
+      through = room(w);
+    } else if (j.s >= at[0] + 0.5 && peels(j) && (j.mitre = mitre(j, at, lo, hi))) {
+      // the lane turns off a trunk that carries straight on and changes position as it does: it turns exactly
+      // where its line in meets its line out, so both stay straight (the corner is drawn in afterwards)
+      [j.w0, j.w1] = [j.s, j.s];
+      return;
+    } else if (j.s >= at[0] + 0.5 && peels(j)) {
+      // the lane turns off a trunk that carries straight on: the bend is the lane's own, so it moves across
+      // while it turns (spread over the bend and on along the narrower side as far as it needs)
+      const more = Math.max(0, want - (at[1] - at[0]));   // a short bend: carry on along the narrower side
+      w = pref === 'b' ? [Math.max(lo, at[0] - more), at[1]] : [at[0], Math.min(hi, at[1] + more)];
+      through = at[1] - at[0];
+    } else if (room(w) < want && room(wide) > room(w)) {
+      w = wide;
+      through = arcs.reduce((t, a) => t + Math.max(0, Math.min(a[1], w[1]) - Math.max(a[0], w[0])), 0);
+    }
+    if (room(w) < 2) w = pref === 'b' ? [j.s, hi2] : [lo2, j.s];
+    // right next to its junction, as long as the move needs (and the room allows): the lane eases into
+    // place as it joins or leaves, the same way at every zoom; a shift that has to cross a bend is spread
+    // over the whole bend, so the curve stays one smooth sweep
+    const len = Math.min(room(w), want + through), atJ = pref === 'b' ? w[1] : w[0];
+    if (through && j.s >= at[0] + 0.5 && peels(j)) { [j.w0, j.w1] = w; return; }
+    [j.w0, j.w1] = room(w) < 2 ? [j.s - 1, j.s + 1] : pref === 'b' ? [atJ - len, atJ] : [atJ, atJ + len];
+  });
   const offAt = s => {
     let o = joints[0].oIn;
     for (const j of joints) {
       if (s < j.w0) return o;
-      if (s <= j.w1) return j.oIn + (j.oOut - j.oIn) * smooth((s - j.w0) / Math.max(1e-6, j.w1 - j.w0));
+      if (s <= j.w1) { const t = (s - j.w0) / Math.max(1e-6, j.w1 - j.w0); return j.oIn + (j.oOut - j.oIn) * (j.linear ? t : smooth(t)); }
       o = j.oOut;
     }
     return o;
   };
-  // resample inside the windows so the ease is smooth, keep every original vertex elsewhere
-  const out = [];
-  let i = 1;
-  const at = s => {   // point on the centreline at arc length s (called with increasing s)
-    while (i < S.length - 1 && S[i] < s) i++;
-    const t = (s - S[i - 1]) / Math.max(1e-9, S[i] - S[i - 1]);
-    return { x: V[i - 1].x + (V[i].x - V[i - 1].x) * t, y: V[i - 1].y + (V[i].y - V[i - 1].y) * t };
-  };
-  const stops = new Set();
-  for (let i = 0; i < V.length; i++) stops.add(S[i]);
+  // keep every rounded point, and add points inside the windows so the ease is smooth
+  const stops = new Set(S);
   for (const j of joints) for (let s = Math.max(0, j.w0); s <= Math.min(total, j.w1) + 1e-6; s += 3) stops.add(Math.min(s, total));
+  const out = []; let i = 1;
   [...stops].sort((a, b) => a - b).forEach(s => {
     if (out.length && s - out[out.length - 1].s < 0.3) return;
-    const q = at(s); out.push({ x: q.x, y: q.y, o: offAt(s), s, hs: (S[i] - s < 0.01 ? V[i].hs : s - S[i - 1] < 0.01 ? V[i - 1].hs : Math.max(V[i - 1].hs, V[i].hs)) });
+    while (i < S.length - 1 && S[i] < s) i++;
+    const t = (s - S[i - 1]) / Math.max(1e-9, S[i] - S[i - 1]);
+    out.push({ x: C[i - 1].x + (C[i].x - C[i - 1].x) * t, y: C[i - 1].y + (C[i].y - C[i - 1].y) * t, o: offAt(s), s });
   });
-  return roundCentre(out, R0);
+  const ms = joints.filter(j => j.mitre);
+  if (!ms.length) return out;
+  // lanes that turn at their own corner: offset everything here, then splice the corners in
+  let abs = offsetPoly(out)[0].map((q, k) => ({ x: q[0], y: q[1], o: 0, s: out[k].s }));
+  for (const { mitre: m } of ms) abs = [...abs.filter(q => q.s < m.from), ...m.pts.map(q => ({ ...q, o: 0 })), ...abs.filter(q => q.s > m.to)];
+  return abs;
 }
 // Round the centreline's corners before the lanes are offset from it. The radius is the corner radius plus
 // half the trunk's width, so every lane gets a concentric arc and inside lanes never fold back on themselves.
+// Each straight piece is shared between the corners at its two ends in proportion to what each needs.
 function roundCentre(V, R0) {
-  if (V.length < 3) return V;
-  const out = [V[0]];
-  for (let i = 1; i < V.length - 1; i++) {
-    const a = V[i - 1], b = V[i], c = V[i + 1];
-    const l1 = Math.hypot(b.x - a.x, b.y - a.y), l2 = Math.hypot(c.x - b.x, c.y - b.y);
-    if (l1 < 1e-6 || l2 < 1e-6) continue;
-    const d1 = [(b.x - a.x) / l1, (b.y - a.y) / l1], d2 = [(c.x - b.x) / l2, (c.y - b.y) / l2];
-    const th = Math.acos(clamp(d1[0] * d2[0] + d1[1] * d2[1], -1, 1));
-    if (th < 0.03) { out.push(b); continue; }
-    const tn = Math.tan(th / 2), t = Math.min((R0 + (b.hs || 0)) * tn, 0.5 * l1, 0.5 * l2);
-    const n = Math.max(2, Math.ceil(th / 0.14)), sgn = Math.sign(d1[0] * d2[1] - d1[1] * d2[0]);
-    const p0 = [b.x - d1[0] * t, b.y - d1[1] * t], R = t / tn;
+  const n = V.length;
+  if (n < 3) return V.map((v, i) => ({ x: v.x, y: v.y, src: i }));
+  const len = [], dir = [];
+  for (let i = 0; i < n - 1; i++) { const dx = V[i + 1].x - V[i].x, dy = V[i + 1].y - V[i].y, l = Math.hypot(dx, dy); len.push(l); dir.push(l > 1e-9 ? [dx / l, dy / l] : null); }
+  const th = new Array(n).fill(0), want = new Array(n).fill(0);
+  for (let i = 1; i < n - 1; i++) {
+    const d1 = dir[i - 1], d2 = dir[i];
+    if (!d1 || !d2) continue;
+    th[i] = Math.acos(clamp(d1[0] * d2[0] + d1[1] * d2[1], -1, 1));
+    if (th[i] >= 0.03) want[i] = (R0 + (V[i].hs || 0)) * Math.tan(th[i] / 2);
+  }
+  const scale = len.map((l, k) => { const need = want[k] + want[k + 1]; return need > l * 0.98 ? l * 0.98 / need : 1; });
+  const out = [{ x: V[0].x, y: V[0].y, src: 0 }];
+  for (let i = 1; i < n - 1; i++) {
+    const b = V[i];
+    if (!want[i]) { out.push({ x: b.x, y: b.y, src: i }); continue; }
+    const d1 = dir[i - 1], d2 = dir[i], tn = Math.tan(th[i] / 2);
+    const t = want[i] * Math.min(scale[i - 1], scale[i]), R = t / tn;
+    const m = Math.max(2, Math.ceil(th[i] / 0.14)), sgn = Math.sign(d1[0] * d2[1] - d1[1] * d2[0]);
+    const p0 = [b.x - d1[0] * t, b.y - d1[1] * t];
     const cx = p0[0] - d1[1] * R * sgn, cy = p0[1] + d1[0] * R * sgn;   // arc centre on the inside
     const a0 = Math.atan2(p0[1] - cy, p0[0] - cx);
-    for (let k = 0; k <= n; k++) {
-      const ang = a0 + sgn * th * k / n;
-      out.push({ x: cx + Math.cos(ang) * R, y: cy + Math.sin(ang) * R, o: b.o, hs: b.hs });
-    }
+    for (let k = 0; k <= m; k++) { const ang = a0 + sgn * th[i] * k / m; out.push({ x: cx + Math.cos(ang) * R, y: cy + Math.sin(ang) * R, src: i }); }
   }
-  out.push(V[V.length - 1]);
+  out.push({ x: V[n - 1].x, y: V[n - 1].y, src: n - 1 });
   return out;
 }
 // Offset a polyline by per-vertex amounts (mitred), returning points and offset vectors.
@@ -408,7 +595,7 @@ function drawLabels(pills, boxes, zs, lw, pitch) {
   const cellsOf = (x0, y0, x1, y1, f) => { for (let gx = Math.floor(x0 / CELL); gx <= Math.floor(x1 / CELL); gx++)
     for (let gy = Math.floor(y0 / CELL); gy <= Math.floor(y1 / CELL); gy++) f(gx + ',' + gy); };
   for (const e of D.edges) {
-    const hw = (e.span * pitch + lw) / 2 + 1;
+    const hw = e.half * pitch + lw / 2 + 1;
     for (let i = 0; i < e.scr.length - 1; i++) {
       const a = e.scr[i], b = e.scr[i + 1], seg = [a[0], a[1], b[0], b[1], hw];
       cellsOf(Math.min(a[0], b[0]) - hw, Math.min(a[1], b[1]) - hw, Math.max(a[0], b[0]) + hw, Math.max(a[1], b[1]) + hw,

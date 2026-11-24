@@ -19,6 +19,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from trunks_def import NEVER_MERGE, ALWAYS_MERGE, LANE_OF
+from layout_def import SHARE, PATHS, ORDER, POINTS, MOVE, WALK, GROUP, PLATFORM, APART, ANCHOR
 
 REF = os.path.join(HERE, '../../data/reference/nyc-subway-4d.json')
 OUT = os.path.join(HERE, '../../data/nyc-subway-diagram.json')
@@ -40,6 +41,10 @@ PLATFORM_JOIN = 7.0   # stop nodes of one station closer than this form one plat
 PLATFORM_ALONG = 30.0 # ... as do stop nodes up to this far apart along one chain
 PLATFORM_NEAR = 11.0  # ... and stops of services that share track close by
 SIMPLIFY = 0.35       # Douglas-Peucker tolerance for edge polylines
+BEND_SHORT = 9.0      # segments shorter than this between straight pieces are part of one bend
+JOG_MAX = 8.0         # sideways nudges smaller than this between parallel straights are dropped
+STRAIGHT_TOL = 5.0    # track within this of a straight line ...
+STRAIGHT_MIN = 60.0   # ... for at least this long is made exactly straight
 
 ref = json.load(open(REF))
 routes = ref['routes']
@@ -451,8 +456,11 @@ def rebuild_adj():
         rid = pats[pi][0]
         for x, y in zip(seq[:-1], seq[1:]):
             adj[x].setdefault(y, set()).add(rid); adj[y].setdefault(x, set()).add(rid)
+# named points that the stretch rules (ORDER, GROUP, APART, ANCHOR) start or end at stay nodes of the graph
+RULE_POINTS = {s[1:] for rule in ORDER + GROUP + APART + ANCHOR for s in rule[1:3] if s.startswith('@') and ',' not in s}
 def is_key(n):
     if n in platform_station: return True
+    if any(named.get(p) == n for p in RULE_POINTS): return True
     nb = list(adj[n])
     if len(nb) != 2: return True
     return adj[n][nb[0]] != adj[n][nb[1]]
@@ -485,21 +493,124 @@ def replace_run(seq, old, new):
         if x != dedup[-1]: dedup.append(x)
     return dedup
 def despike_seq(seq):
-    # drop out-and-back steps (a, b, a) and sharp reversals at nodes that are not platforms
+    """Drop out-and-back steps and sharp reversals from a route's node walk.
+    - (a, b, a) at a node that is not a platform: the step to b goes.
+    - a route that runs up to a platform and straight back the same way (it joined its trunk just past the
+      station): it now goes from its branch straight to the platform, so the junction moves to the station.
+    - a sharp reversal at a node: a pass-through node goes; a platform is moved back onto the line."""
     while True:
+        changed = False
+        for k in range(1, len(seq) - 1):
+            if seq[k - 1] != seq[k + 1] or seq[k] not in platform_station: continue
+            m = 1
+            while k - m - 1 >= 0 and k + m + 1 < len(seq) and seq[k - m - 1] == seq[k + m + 1]: m += 1
+            seq = seq[:k - m] + seq[k:]; changed = True; break
         out = [seq[0]]
         for n in seq[1:]:
             if len(out) >= 2 and n == out[-2] and out[-1] not in platform_station: out.pop(); continue
             if n != out[-1]: out.append(n)
-        k = 1; changed = len(out) != len(seq)
+        k = 1; changed = changed or len(out) != len(seq)
         while k < len(out) - 1:
             a, b, c = pos[out[k - 1]], pos[out[k]], pos[out[k + 1]]
             u, v = b - a, c - b; nu, nv = np.hypot(*u), np.hypot(*v)
-            if out[k] not in platform_station and nu > 1e-9 and nv > 1e-9 and (u @ v) / (nu * nv) < -0.5:
-                del out[k]; changed = True; k = max(1, k - 1); continue
+            if nu > 1e-9 and nv > 1e-9 and (u @ v) / (nu * nv) < -0.5:
+                if out[k] not in platform_station:
+                    del out[k]; changed = True; k = max(1, k - 1); continue
+                ac = c - a; L2 = float(ac @ ac)          # platform sitting past a hairpin: put it back on the line
+                t = 0.5 if L2 < 1e-9 else min(1.0, max(0.0, float((b - a) @ ac) / L2))
+                if out[k] not in FIXED: pos[out[k]] = a + ac * t; changed = True
             k += 1
         seq = out
         if not changed: return seq
+# ---------------------------------------------------------------- 5b. hand placement: shared track
+def stop_node(pi, station):
+    # platform node where pattern pi stops at a station given by display name or id
+    for k, sid in enumerate(pats[pi][1]['stops']):
+        if sid == station or stations[sid]['name'] == station: return platform_of[(pi, k)]
+    return None
+def between(seq, a, b):
+    i, j = seq.index(a), seq.index(b)
+    return (i, j, False) if i <= j else (j, i, True)
+for rid, follow, sa, sb in SHARE:
+    src_seq = None
+    for pi, (r, _) in enumerate(pats):
+        if r != follow: continue
+        a, b = stop_node(pi, sa), stop_node(pi, sb)
+        if a in pat_nodes[pi] and b in pat_nodes[pi]:
+            i, j, _ = between(pat_nodes[pi], a, b); src_seq = (a, b, pat_nodes[pi][i:j + 1] if pat_nodes[pi].index(a) <= pat_nodes[pi].index(b) else pat_nodes[pi][i:j + 1][::-1]); break
+    if not src_seq: print('SHARE: no track for', follow, sa, sb); continue
+    a, b, run = src_seq; n_done = 0
+    for pi, (r, _) in enumerate(pats):
+        if r != rid: continue
+        seq = pat_nodes[pi]
+        if a not in seq or b not in seq: print('SHARE:', rid, 'does not stop at both', sa, sb); continue
+        i, j, rev = between(seq, a, b)
+        pat_nodes[pi] = seq[:i] + (run[::-1] if rev else run) + seq[j + 1:]; n_done += 1
+    print('SHARE', rid, 'on', follow, sa, '->', sb, 'patterns', n_done)
+
+# ---------------------------------------------------------------- 5c. hand placement: pins and walks
+FIXED = set()                            # nodes placed by hand: later passes leave them where they are
+def walk_node(pi, station):
+    # node of a station on pattern pi's walk: where it stops, or a platform it passes through;
+    # '@name' is a named point (POINTS), '@x,y' the walk's node nearest those coordinates
+    if station.startswith('@'):
+        if ',' in station:
+            q = np.array([float(v) for v in station[1:].split(',')])
+            return min(pat_nodes[pi], key=lambda n: float(np.hypot(*(pos[n] - q))))
+        return named.get(station[1:])
+    n = stop_node(pi, station)
+    if n is not None: return n
+    for sid, ns in platforms.items():
+        if sid == station or stations[sid]['name'] == station:
+            hit = [x for x in ns if x in pat_set_now(pi)]
+            if hit: return hit[0]
+    return None
+def pat_set_now(pi): return set(pat_nodes[pi])
+def patterns_of(rid): return [pi for pi, (r, _) in enumerate(pats) if lane_of(r) == lane_of(rid) and (r == rid or LANE_OF.get(r) == rid)]
+for st, keep_r, other_r in PLATFORM:     # one platform node for services stopping side by side
+    keep = next((stop_node(pi, st) for pi in patterns_of(keep_r) if stop_node(pi, st) is not None), None)
+    for pi in patterns_of(other_r):
+        for k, sid in enumerate(pats[pi][1]['stops']):
+            if sid != st and stations[sid]['name'] != st: continue
+            old_n = platform_of[(pi, k)]
+            if old_n == keep: continue
+            platform_of[(pi, k)] = keep
+            pat_nodes[pi] = [keep if n == old_n else n for n in pat_nodes[pi]]
+            if old_n in platforms[sid]: platforms[sid].remove(old_n)
+            platform_station.pop(old_n, None)
+    print('PLATFORM', st, other_r, 'stops at', keep_r + "'s platform")
+for rid, st, x, y in MOVE:
+    done_ = False
+    for pi in patterns_of(rid):
+        n = stop_node(pi, st)
+        if n is None: continue
+        pos[n] = [pos[n][0] if x is None else x, pos[n][1] if y is None else y]; FIXED.add(n); done_ = True
+    if not done_: print('MOVE: no stop for', rid, st)
+named = {}
+def point_node(name):
+    global pos
+    if name not in named:
+        pos = np.vstack([pos, np.array(POINTS[name], float)]); named[name] = len(pos) - 1; FIXED.add(named[name])
+    return named[name]
+for rid, sa, sb, mids in WALK:
+    n_done = 0
+    for pi in patterns_of(rid):
+        seq = pat_nodes[pi]; a, b = walk_node(pi, sa), walk_node(pi, sb)
+        if a is None or b is None or a not in seq or b not in seq: continue
+        mid = []
+        for m in mids:
+            node = point_node(m[1:]) if m.startswith('@') else walk_node(pi, m)
+            if node is None:
+                cand = [x for sid, ns in platforms.items() if sid == m or stations[sid]['name'] == m for x in ns]
+                node = cand[0] if cand else None
+            if node is None: print('WALK: unknown stop', m); break
+            mid.append(node)
+        else:
+            i, j = seq.index(a), seq.index(b)
+            pat_nodes[pi] = seq[:i] + [a] + mid + [b] + seq[j + 1:] if i < j else seq[:j] + [b] + mid[::-1] + [a] + seq[i + 1:]
+            n_done += 1
+    print('WALK', rid, sa, '->', sb, 'patterns', n_done)
+
 JMERGE = 16.0       # junctions closer than this along an edge become one junction
 JPLAT = 6.0         # a junction this close to a platform moves onto it
 for it in range(20):
@@ -658,6 +769,58 @@ for s0 in range(len(stretches)):
                         swap.update(zip(cur, sorted(cur, key=lambda l: (pos_in.get(l, 1e9), rank.get(l, 0)))))
                     if swap:
                         for m in stretches[s2]: edges[m]['lanes'] = [swap.get(l, l) for l in edges[m]['lanes']]
+# 3. Services that carry on from a trunk into a branch keep the trunk's left-to-right order, so lanes only
+#    cross where the routes really have to. Trunks are handled largest first; a branch stretch is reordered
+#    as a whole (by swapping lane names, which keeps it consistent along its length) at most once.
+through = collections.defaultdict(set)        # (node, edge, edge) -> lanes that run from one edge onto the other
+for pi, seq in pat_nodes.items():
+    walk_e = []; k = 0
+    while k < len(seq) - 1:
+        if seq[k] in key and (seq[k], seq[k + 1]) in edge_of:
+            ei, dr = edge_of[(seq[k], seq[k + 1])]; walk_e.append((ei, seq[k])); k += len(edges[ei]['chain']) - 1
+        else: k += 1
+    for (e1, _), (e2, x) in zip(walk_e, walk_e[1:]):
+        through[(x, e1, e2)].add(lane_of(pats[pi][0])); through[(x, e2, e1)].add(lane_of(pats[pi][0]))
+reordered = set()
+def walk_edges(seq):
+    out = []; k = 0
+    while k < len(seq) - 1:
+        if seq[k] in key and (seq[k], seq[k + 1]) in edge_of:
+            ei, dr = edge_of[(seq[k], seq[k + 1])]; out.append((ei, dr)); k += len(edges[ei]['chain']) - 1
+        else: k += 1
+    return out
+for rid, sa, sb, want in ORDER:     # hand-set lane orders (layout_def.ORDER) go first and are not changed
+    for pi, (r, _) in enumerate(pats):
+        if r != rid: continue
+        a, b = walk_node(pi, sa), walk_node(pi, sb)
+        walk = walk_edges(pat_nodes[pi]); nodes = [edges[walk[0][0]]['a'] if walk[0][1] > 0 else edges[walk[0][0]]['b']]
+        for ei, dr in walk: nodes.append(edges[ei]['b'] if dr > 0 else edges[ei]['a'])
+        if a not in nodes or b not in nodes: continue
+        i, j = nodes.index(a), nodes.index(b)
+        sub = walk[i:j] if i < j else [(ei, -dr) for ei, dr in walk[j:i][::-1]]
+        for ei, dr in sub:
+            e = edges[ei]; cur = e['lanes'] if dr > 0 else e['lanes'][::-1]   # current order in the direction of travel
+            travel_order = [l for l in want if l in cur] + [l for l in cur if l not in want]
+            lanes = travel_order if dr > 0 else travel_order[::-1]
+            swap = dict(zip(e['lanes'], lanes))
+            for m in stretches[sid_of[ei]]: edges[m]['lanes'] = [swap.get(l, l) for l in edges[m]['lanes']]
+            reordered.add(sid_of[ei])
+        print('ORDER', rid, sa, '->', sb, 'edges', len(sub))
+        break
+for x in sorted(node_edges, key=lambda n: -max(len(edges[ei]['lanes']) for ei in node_edges[n])):
+    es = sorted(set(node_edges[x]), key=lambda ei: -len(edges[ei]['lanes']))
+    for i1, e1 in enumerate(es):
+        for e2 in es[i1 + 1:]:
+            s2 = sid_of[e2]
+            if s2 in reordered or s2 == sid_of[e1]: continue
+            common = through.get((x, e1, e2), set())
+            if len(common) < 2: continue
+            want = [l for l in travel(e1, x, True) if l in common]
+            cur = [l for l in travel(e2, x, False) if l in common]
+            if want == cur: continue
+            swap = dict(zip(cur, want))
+            for m in stretches[s2]: edges[m]['lanes'] = [swap.get(l, l) for l in edges[m]['lanes']]
+            reordered.add(s2)
 for ei, e in enumerate(edges):
     e['ties'] = [[l for l in e['lanes'] if l in t] for t in stretch_ties[sid_of[ei]]]
 
@@ -678,7 +841,7 @@ def stretch(ei):
             cur_n = edges[cur_e]['b'] if edges[cur_e]['a'] == cur_n else edges[cur_e]['a']
     return out
 fam = {r['id']: r['color'] for r in routes}
-done = set()
+done = set(); blind = []
 for ei, e in enumerate(edges):
     if ei in done: continue
     es = stretch(ei); done.update(es)
@@ -687,6 +850,7 @@ for ei, e in enumerate(edges):
     if not plats:   # no stations inside the stretch: judge express and local by the stations at its ends
         ends = {n for x in es for n in (edges[x]['a'], edges[x]['b'])} - inner
         plats = sorted(n for n in ends if n in platform_station and any(l in stops_at[n] for l in e['lanes']))
+    if not plats: blind.append(es)
     sig = {l: tuple(l in stops_at[n] for n in plats) for l in e['lanes']}
     # one grouping for the whole stretch: lanes tied anywhere along it share a track, then
     # neighbouring groups with the same stops join
@@ -707,6 +871,244 @@ for ei, e in enumerate(edges):
             if tracks and root(tracks[-1][-1]) == root(l): tracks[-1].append(l)
             else: tracks.append([l])
         edges[x]['tracks'] = tracks
+# A stretch with no stations at all says nothing about express and local: take the grouping of the biggest
+# trunk it connects to that carries all its lanes, so lanes keep their spacing through the junctions.
+for es in blind:
+    ends = {n for x in es for n in (edges[x]['a'], edges[x]['b'])}
+    lanes0 = set(edges[es[0]]['lanes'])
+    nbrs = [y for n in ends for y in node_edges[n] if y not in es and lanes0 <= set(edges[y]['lanes'])]
+    if not nbrs: continue
+    big = max(nbrs, key=lambda y: len(edges[y]['lanes']))
+    gid = {l: gi for gi, t in enumerate(edges[big]['tracks']) for l in t}
+    for x in es:
+        tracks = []
+        for l in edges[x]['lanes']:
+            if tracks and gid.get(tracks[-1][-1]) == gid.get(l): tracks[-1].append(l)
+            else: tracks.append([l])
+        edges[x]['tracks'] = tracks
+
+# hand-set separate tracks (layout_def.APART): listed lanes never share a track group
+for rid, sa, sb, apart in APART:
+    # lanes: plain names (each its own track) or lists (lanes that may share a track with each other)
+    side = {}
+    for gi, g in enumerate(apart):
+        for l in ([g] if isinstance(g, str) else g): side[l] = gi
+    n_done = 0
+    for pi in patterns_of(rid):
+        a, b = walk_node(pi, sa), walk_node(pi, sb)
+        walk = walk_edges(pat_nodes[pi]); nodes = [edges[walk[0][0]]['a'] if walk[0][1] > 0 else edges[walk[0][0]]['b']]
+        for ei, dr in walk: nodes.append(edges[ei]['b'] if dr > 0 else edges[ei]['a'])
+        if a not in nodes or b not in nodes: continue
+        i, j = sorted((nodes.index(a), nodes.index(b)))
+        for ei, dr in walk[i:j]:
+            tracks = []
+            for t in edges[ei]['tracks']:
+                cur = []
+                for l in t:
+                    if cur and l in side and any(x in side and side[x] != side[l] for x in cur): tracks.append(cur); cur = []
+                    cur.append(l)
+                tracks.append(cur)
+            if len(tracks) != len(edges[ei]['tracks']): n_done += 1
+            edges[ei]['tracks'] = tracks
+        break
+    print('APART', rid, sa, '->', sb, apart, 'edges', n_done)
+
+# hand-set track groups (layout_def.GROUP): listed lanes running side by side become one group
+for rid, sa, sb, together in GROUP:
+    n_done = 0
+    for pi in patterns_of(rid):
+        a, b = walk_node(pi, sa), walk_node(pi, sb)
+        walk = walk_edges(pat_nodes[pi]); nodes = [edges[walk[0][0]]['a'] if walk[0][1] > 0 else edges[walk[0][0]]['b']]
+        for ei, dr in walk: nodes.append(edges[ei]['b'] if dr > 0 else edges[ei]['a'])
+        if a not in nodes or b not in nodes: continue
+        i, j = sorted((nodes.index(a), nodes.index(b)))
+        for ei, dr in walk[i:j]:
+            e = edges[ei]; present = [l for l in e['lanes'] if l in together]
+            if len(present) < 2: continue
+            idx = sorted(e['lanes'].index(l) for l in present)
+            if idx[-1] - idx[0] != len(idx) - 1: continue           # not side by side
+            tracks, merged = [], None
+            for t in e['tracks']:
+                if any(l in together for l in t):
+                    if merged is None: merged = list(t); tracks.append(merged)
+                    else: merged.extend(t)
+                else: tracks.append(t)
+            e['tracks'] = tracks; e['regroup'] = True; n_done += 1
+        break
+    print('GROUP', rid, sa, '->', sb, together, 'edges', n_done)
+
+# hand-set reference lanes (layout_def.ANCHOR): the lane runs on the centreline, others are offset from it
+for rid, sa, sb, lane in ANCHOR:
+    n_done = 0
+    for pi in patterns_of(rid):
+        a, b = walk_node(pi, sa), walk_node(pi, sb)
+        walk = walk_edges(pat_nodes[pi]); nodes = [edges[walk[0][0]]['a'] if walk[0][1] > 0 else edges[walk[0][0]]['b']]
+        for ei, dr in walk: nodes.append(edges[ei]['b'] if dr > 0 else edges[ei]['a'])
+        if a not in nodes or b not in nodes: continue
+        i, j = sorted((nodes.index(a), nodes.index(b)))
+        for ei, dr in walk[i:j]: edges[ei]['anchor'] = lane; edges[ei]['anchor_from'] = a; n_done += 1
+        break
+    print('ANCHOR', rid, sa, '->', sb, lane, 'edges', n_done)
+
+# ---------------------------------------------------------------- 7b. one corner per bend
+def consolidate(pts):
+    """Each bend becomes a single corner. A run of short segments between two longer straight pieces
+    (a curve sampled from the source, or leftover wobble) is replaced by the point where those straight
+    pieces meet; a sideways jog between parallel pieces becomes one straight connector. The renderer
+    then draws one sweeping arc at each corner instead of rounding every little vertex."""
+    pts = [list(p) for p in pts]
+    while True:
+        n = len(pts)
+        if n < 4: return pts
+        L = [math.dist(pts[i], pts[i + 1]) for i in range(n - 1)]
+        done = True
+        i = 1
+        while i < n - 2:
+            if L[i] >= BEND_SHORT: i += 1; continue
+            j = i
+            while j < n - 1 and L[j] < BEND_SHORT: j += 1
+            # short segments i..j-1 join vertex i to vertex j; segments i-1 and j are the straight pieces
+            if j >= n - 1: break
+            A, B, Cc, Dd = (np.array(pts[k], float) for k in (i - 1, i, j, j + 1))
+            u, v = B - A, Dd - Cc
+            nu, nv = np.hypot(*u), np.hypot(*v)
+            run = sum(L[i:j])
+            cr = (u[0] * v[1] - u[1] * v[0]) / (nu * nv)
+            # a small sideways nudge between two nearly parallel straights: drop it, the straights meet directly
+            if (u @ v) / (nu * nv) > 0.9 and abs(((Cc - B)[0] * u[1] - (Cc - B)[1] * u[0]) / nu) < JOG_MAX:
+                pts = pts[:i] + pts[j + 1:]; done = False; break
+            if j - i >= 1 and abs(cr) > 0.08:
+                # meet the two straight pieces at their intersection
+                t = ((Cc - B)[0] * v[1] - (Cc - B)[1] * v[0]) / (u[0] * v[1] - u[1] * v[0])
+                X = B + u * t
+                if np.hypot(*(X - B)) < 2 * run + 2 and np.hypot(*(X - Cc)) < 2 * run + 2 and (X - A) @ u > 0 and (Dd - X) @ v > 0:
+                    pts = pts[:i] + [list(X)] + pts[j + 1:]; done = False; break
+            elif j - i >= 2 and (u @ v) > 0:
+                pts = pts[:i + 1] + pts[j:]; done = False; break   # a jog: one straight connector
+            i = j + 1
+        if done: return pts
+
+# ---------------------------------------------------------------- 7c. straight runs
+# Where a route's track stays within STRAIGHT_TOL of a straight line for at least STRAIGHT_MIN, it is made
+# exactly straight: nodes, junctions and edge vertices along it are moved onto that line. This removes the
+# small wanders the source's lane shuffles leave in a centreline. Longest runs first; nothing moves twice.
+for e in edges:
+    e['pts'] = dp([[float(pos[n][0]), float(pos[n][1])] for n in e['chain']], SIMPLIFY)
+def walk_edges(seq):
+    out = []; k = 0
+    while k < len(seq) - 1:
+        if seq[k] in key and (seq[k], seq[k + 1]) in edge_of:
+            ei, dr = edge_of[(seq[k], seq[k + 1])]; out.append((ei, dr)); k += len(edges[ei]['chain']) - 1
+        else: k += 1
+    return out
+def point_refs(walk):
+    refs = []
+    for ei, dr in walk:
+        e = edges[ei]; n = len(e['pts'])
+        idx = list(range(n)) if dr > 0 else list(range(n - 1, -1, -1))
+        for m, i in enumerate(idx):
+            ref = ('n', e['a']) if i == 0 else ('n', e['b']) if i == n - 1 else ('v', ei, i)
+            if refs and m == 0: continue
+            refs.append(ref)
+    return refs
+def ref_xy(r):
+    return np.array(pos[r[1]], float) if r[0] == 'n' else np.array(edges[r[1]]['pts'][r[2]], float)
+def set_ref(r, q):
+    if r[0] == 'v': edges[r[1]]['pts'][r[2]] = [float(q[0]), float(q[1])]; return
+    pos[r[1]] = q
+    for ei in node_edges[r[1]]:
+        e = edges[ei]
+        if e['a'] == r[1]: e['pts'][0] = [float(q[0]), float(q[1])]
+        if e['b'] == r[1]: e['pts'][-1] = [float(q[0]), float(q[1])]
+runs = []
+for pi, seq in pat_nodes.items():
+    refs = point_refs(walk_edges(seq)); xy = [ref_xy(r) for r in refs]; n = len(refs); i = 0
+    while i < n - 2:
+        best = None; j = i + 2
+        while j < n:
+            a, b = xy[i], xy[j]; ab = b - a; L = float(np.hypot(*ab))
+            if L < 1e-6: break
+            dev = max(abs(ab[0] * (xy[k] - a)[1] - ab[1] * (xy[k] - a)[0]) / L for k in range(i + 1, j))
+            # stay a line: every point within tolerance, and progressing along it
+            if dev > STRAIGHT_TOL or any((xy[k + 1] - xy[k]) @ ab < -1e-6 for k in range(i, j)): break
+            best = (j, dev, L); j += 1
+        if best and best[2] >= STRAIGHT_MIN and best[1] > 0.3:
+            runs.append((best[2], refs[i:best[0] + 1], xy[i], xy[best[0]]))
+        i = best[0] if best else i + 1
+moved = {('n', n) for n in FIXED}; nmoved = 0
+for L, refs, a, b in sorted(runs, key=lambda r: -r[0]):
+    ab = b - a; L2 = float(ab @ ab)
+    for r in refs[1:-1]:
+        if r in moved: continue
+        q = ref_xy(r); t = float((q - a) @ ab) / L2
+        set_ref(r, a + ab * t); moved.add(r); nmoved += 1
+    moved.add(refs[0]); moved.add(refs[-1])
+print('straight runs', len(runs), 'points moved', nmoved)
+for e in edges:     # a short stub at either end that turns into its node: run straight into the node instead
+    for _ in range(3):
+        P_ = e['pts']
+        for end in (0, -1):
+            if len(P_) < 3: break
+            n0, p1, p2 = (P_[0], P_[1], P_[2]) if end == 0 else (P_[-1], P_[-2], P_[-3])
+            u = np.subtract(p1, n0); v = np.subtract(p2, p1); nu, nv = np.hypot(*u), np.hypot(*v)
+            if nu < BEND_SHORT and nv > 1e-6 and nu > 1e-6 and (u @ v) / (nu * nv) < math.cos(math.radians(8)):
+                del P_[1 if end == 0 else -2]
+for e in edges:     # moving shared points can leave a vertex behind its neighbour: drop such reversals
+    P_ = e['pts']; k = 1
+    while k < len(P_) - 1:
+        u = np.subtract(P_[k], P_[k - 1]); v = np.subtract(P_[k + 1], P_[k]); nu, nv = np.hypot(*u), np.hypot(*v)
+        if nu < 0.05 or nv < 0.05 or (u @ v) / (nu * nv) < -0.2: del P_[k]; k = max(1, k - 1); continue
+        k += 1
+
+# ---------------------------------------------------------------- 7d. hand placement: paths
+def place_path(rid, sa, sb, waypoints):
+    for pi, (r, _) in enumerate(pats):
+        if r != rid: continue
+        a, b = stop_node(pi, sa), stop_node(pi, sb)
+        if a is None or b is None: continue
+        walk = walk_edges(pat_nodes[pi]); nodes = [edges[walk[0][0]]['a'] if walk[0][1] > 0 else edges[walk[0][0]]['b']]
+        for ei, dr in walk: nodes.append(edges[ei]['b'] if dr > 0 else edges[ei]['a'])
+        if a not in nodes or b not in nodes: continue
+        i, j = nodes.index(a), nodes.index(b)
+        sub = walk[i:j] if i < j else [(ei, -dr) for ei, dr in walk[j:i][::-1]]
+        seq = nodes[i:j + 1] if i < j else nodes[j:i + 1][::-1]
+        break
+    else:
+        print('PATH: no walk for', rid, sa, sb); return
+    T = [np.array(pos[a], float)]
+    snaps = []
+    for w in waypoints:
+        if w[0] == 'J':
+            q = np.array(w[1:], float); T.append(q)
+            jn = min((n for n in seq[1:-1] if n not in platform_station), key=lambda n: np.hypot(*(pos[n] - q)), default=None)
+            if jn is not None: snaps.append((jn, q))
+        else: T.append(np.array(w, float))
+    T.append(np.array(pos[b], float))
+    cum = [0.0]
+    for p0, p1 in zip(T[:-1], T[1:]): cum.append(cum[-1] + float(np.hypot(*(p1 - p0))))
+    def proj(q, k0):        # nearest point on T at or after segment k0: (arc length, segment, point)
+        best = None
+        for k in range(k0, len(T) - 1):
+            p0, p1 = T[k], T[k + 1]; d_ = p1 - p0; L2 = float(d_ @ d_)
+            t = 0.0 if L2 < 1e-12 else min(1.0, max(0.0, float((q - p0) @ d_) / L2))
+            x = p0 + d_ * t; dd = float(np.hypot(*(x - q)))
+            if best is None or dd < best[0] - 1e-9: best = (dd, cum[k] + t * float(np.sqrt(L2)), k, x)
+        return best[1:]
+    snapped = dict(snaps); s_of = {a: 0.0, b: cum[-1]}; k0 = 0
+    for n in seq[1:-1]:
+        if n in snapped:
+            s, k0, x = proj(snapped[n], 0)
+        else:
+            s, k0, x = proj(np.array(pos[n], float), k0)
+        set_ref(('n', n), x); s_of[n] = s
+    for (ei, dr), u, v in zip(sub, seq[:-1], seq[1:]):
+        s0, s1 = s_of[u], s_of[v]
+        inner = [list(map(float, T[k])) for k in range(1, len(T) - 1) if s0 + 1e-6 < cum[k] < s1 - 1e-6]
+        pts = [list(map(float, pos[u]))] + inner + [list(map(float, pos[v]))]
+        edges[ei]['pts'] = pts if dr > 0 else pts[::-1]
+        edges[ei]['locked'] = True
+    print('PATH', rid, sa, '->', sb, 'nodes', len(seq), 'edges', len(sub))
+for rid, sa, sb, wps in PATHS: place_path(rid, sa, sb, wps)
 
 # ---------------------------------------------------------------- 8. output
 key_list = sorted(key, key=lambda n: (round(pos[n][1], 1), round(pos[n][0], 1)))
@@ -722,10 +1124,14 @@ for n in key_list:
     node_out.append(o)
 edge_out = []
 for ei, e in enumerate(edges):
-    pts = dp([[r2(pos[n][0]), r2(pos[n][1])] for n in e['chain']], SIMPLIFY)
+    pinned = all(n in FIXED for n in e['chain'][1:-1]) and len(e['chain']) > 2
+    pts = e['pts'] if e.get('locked') or pinned else consolidate(e['pts'])
+    pts = [[r2(x), r2(y)] for x, y in pts]
     routes_ord = sorted(e['routes'], key=lambda r: (e['lanes'].index(lane_of(r)), r))
     edge_out.append(dict(id=eid[ei], **{'from': nid[e['a']], 'to': nid[e['b']]}, path=pts,
                          lanes=e['lanes'], tracks=e['tracks'], routes=routes_ord))
+    if e.get('anchor'): edge_out[-1]['anchor'] = e['anchor']; edge_out[-1]['anchorFrom'] = nid[e['anchor_from']]
+    if e.get('regroup'): edge_out[-1]['regroup'] = True
 REG = {'always', 'interchange'}
 route_out = []
 for r in routes:
